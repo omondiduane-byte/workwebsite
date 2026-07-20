@@ -1,5 +1,5 @@
-// src/services/inquiryService.ts
-import { supabase } from '../supabaseClient';
+// src/supabase/inquiryService.ts
+import { supabase } from './supabaseClient';
 
 export const inquiryService = {
   // Function to fetch all inquiries

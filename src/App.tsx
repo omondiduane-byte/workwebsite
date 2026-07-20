@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, } from 'react';
-import { supabase } from './supabaseClient';
+import { supabase } from './supabase/supabaseClient';
 import { 
   Search, Smartphone, ArrowRight, 
   HelpCircle, ShoppingCart, 
@@ -229,7 +229,12 @@ export default function App() {
     setTimeout(() => setToastMessage(null), 4000);
   };
 
-  const handleSignOut = () => {
+  const handleSignOut = async () => {
+    try {
+      await supabase.auth.signOut();
+    } catch (e) {
+      console.error('Error signing out from Supabase:', e);
+    }
     setCurrentUser(null);
     localStorage.removeItem('mm_current_user');
     setCart([]);
@@ -582,16 +587,61 @@ export default function App() {
     }
 
     if (authMode === 'login') {
-      console.log("Attempting Supabase query...");
+      console.log("Attempting Supabase Auth login...");
       try {
+        const cleanPhone = authPhone.trim().replace(/\s+/g, '');
+        const dummyEmail = `${cleanPhone}@matchmarket.com`;
+        const dummyPassword = `pwd_${cleanPhone}`;
+
+        // 1. Sign in via Supabase Auth
+        const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+          email: dummyEmail,
+          password: dummyPassword,
+        });
+
+        if (authError) {
+          // Fallback: If auth fails, try to check if they had a legacy database profile (username and phone match)
+          console.warn("Auth login failed, trying legacy query fallback:", authError.message);
+          const { data: legacyData, error: legacyError } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('username', authUsername)
+            .eq('phone', authPhone)
+            .maybeSingle();
+
+          if (legacyError || !legacyData) {
+            triggerToast('Account not found! Switch to Sign Up mode.', 'error');
+            return;
+          }
+
+          // Allow login using the legacy profile data directly
+          const user: AuthUser = {
+            id: legacyData.id,
+            username: legacyData.username,
+            phone: legacyData.phone,
+            role: legacyData.role as 'admin' | 'vendor' | 'customer',
+            linkedEntityName: legacyData.linked_entity_name || undefined
+          };
+          setCurrentUser(user);
+          localStorage.setItem('mm_current_user', JSON.stringify(user));
+          setIsAuthOpen(false);
+          triggerToast(`Welcome back (Legacy), ${user.username}!`);
+          return;
+        }
+
+        const userId = authData.user?.id;
+        if (!userId) {
+          triggerToast('Failed to retrieve user session.', 'error');
+          return;
+        }
+
+        // 2. Fetch profile from database using UUID
         const { data, error } = await supabase
           .from('profiles')
           .select('*')
-          .eq('username', authUsername)
-          .eq('phone', authPhone)
+          .eq('id', userId)
           .maybeSingle();
 
-          console.log("Query result:", { data, error });
         if (error) {
           triggerToast('Error searching database: ' + error.message, 'error');
           return;
@@ -610,16 +660,49 @@ export default function App() {
           setIsAuthOpen(false);
           triggerToast(`Welcome back, ${user.username}!`);
         } else {
-          triggerToast('Account not found! Switch to Sign Up mode.', 'error');
+          // If they exist in auth but not profiles, we create the profile
+          let assignedRole = authRole;
+          let linkedName = '';
+          if (assignedRole === 'customer') {
+            const foundVendor = vendors.find(v => v.name.toLowerCase().includes(authUsername.toLowerCase()));
+            if (foundVendor) {
+              assignedRole = 'vendor';
+              linkedName = foundVendor.name;
+            }
+          }
+          const newProfile = {
+            id: userId,
+            username: authUsername,
+            phone: authPhone,
+            role: assignedRole,
+            linked_entity_name: linkedName || null
+          };
+          
+          const { data: insertData, error: insertError } = await supabase.from('profiles').insert([newProfile]).select().maybeSingle();
+          const userProfile = insertData || newProfile;
+          const user: AuthUser = {
+            id: userProfile.id,
+            username: userProfile.username,
+            phone: userProfile.phone,
+            role: userProfile.role as 'admin' | 'vendor' | 'customer',
+            linkedEntityName: userProfile.linked_entity_name || undefined
+          };
+          setCurrentUser(user);
+          localStorage.setItem('mm_current_user', JSON.stringify(user));
+          setIsAuthOpen(false);
+          triggerToast(`Welcome back, ${user.username}!`);
         }
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
         triggerToast('Auth connection error: ' + message, 'error');
       }
     } else if (authMode === 'signup') {
-      console.log("Attempting Supabase query...");
+      console.log("Attempting Supabase Auth registration...");
       try {
-        const userId = generateUniqueId('u');
+        const cleanPhone = authPhone.trim().replace(/\s+/g, '');
+        const dummyEmail = `${cleanPhone}@matchmarket.com`;
+        const dummyPassword = `pwd_${cleanPhone}`;
+
         let assignedRole = authRole;
         let linkedName = '';
 
@@ -631,8 +714,32 @@ export default function App() {
           }
         }
 
+        // 1. Sign up user in Supabase Auth
+        const { data: authData, error: authError } = await supabase.auth.signUp({
+          email: dummyEmail,
+          password: dummyPassword,
+          options: {
+            data: {
+              username: authUsername,
+              phone: authPhone,
+              role: assignedRole
+            }
+          }
+        });
+
+        if (authError) {
+          triggerToast('Auth registration failed: ' + authError.message, 'error');
+          return;
+        }
+
+        const userId = authData.user?.id;
+        if (!userId) {
+          triggerToast('Failed to retrieve registered User ID.', 'error');
+          return;
+        }
+
         const newProfile = {
-          id: userId,
+          id: userId, // Correct UUID from Auth
           username: authUsername,
           phone: authPhone,
           role: assignedRole,
@@ -642,17 +749,10 @@ export default function App() {
         console.log("Inserting new profile to Supabase:", newProfile);
         const { data: insertData, error: insertError } = await supabase.from('profiles').insert([newProfile]).select().maybeSingle();
         console.log('Insert result:', { insertData, insertError });
+        
         if (insertError) {
-          triggerToast('Error registering profile: ' + insertError.message, 'error');
+          triggerToast('Error registering profile in database: ' + insertError.message, 'error');
           return;
-        }
-
-        if (!insertData) {
-          // Insert may have succeeded but returned no row — often caused by Row Level Security (RLS) policies
-          console.warn('Insert returned no data. This can be caused by RLS policies hiding rows from the anon role.');
-          triggerToast('Account created but not visible to public queries. Check RLS policies in Supabase Studio.', 'info');
-        } else {
-          console.log("Inserted new profile (returned):", insertData);
         }
 
         const user: AuthUser = {
