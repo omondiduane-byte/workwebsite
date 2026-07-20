@@ -575,12 +575,14 @@ export default function App() {
 
   const handleAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    console.log("Form submission started");
     if (!authUsername || !authPhone) {
       triggerToast('Complete username and telephone number!', 'error');
       return;
     }
 
     if (authMode === 'login') {
+      console.log("Attempting Supabase query...");
       try {
         const { data, error } = await supabase
           .from('profiles')
@@ -589,6 +591,7 @@ export default function App() {
           .eq('phone', authPhone)
           .maybeSingle();
 
+          console.log("Query result:", { data, error });
         if (error) {
           triggerToast('Error searching database: ' + error.message, 'error');
           return;
@@ -614,6 +617,7 @@ export default function App() {
         triggerToast('Auth connection error: ' + message, 'error');
       }
     } else if (authMode === 'signup') {
+      console.log("Attempting Supabase query...");
       try {
         const userId = generateUniqueId('u');
         let assignedRole = authRole;
@@ -635,10 +639,20 @@ export default function App() {
           linked_entity_name: linkedName || null
         };
 
-        const { error } = await supabase.from('profiles').insert([newProfile]);
-        if (error) {
-          triggerToast('Error registering profile: ' + error.message, 'error');
+        console.log("Inserting new profile to Supabase:", newProfile);
+        const { data: insertData, error: insertError } = await supabase.from('profiles').insert([newProfile]).select().maybeSingle();
+        console.log('Insert result:', { insertData, insertError });
+        if (insertError) {
+          triggerToast('Error registering profile: ' + insertError.message, 'error');
           return;
+        }
+
+        if (!insertData) {
+          // Insert may have succeeded but returned no row — often caused by Row Level Security (RLS) policies
+          console.warn('Insert returned no data. This can be caused by RLS policies hiding rows from the anon role.');
+          triggerToast('Account created but not visible to public queries. Check RLS policies in Supabase Studio.', 'info');
+        } else {
+          console.log("Inserted new profile (returned):", insertData);
         }
 
         const user: AuthUser = {
@@ -676,10 +690,16 @@ export default function App() {
       status: 'Pending'
     };
 
-    const { error } = await supabase.from('inquiries').insert([newInquiry]);
-    if (error) {
-      triggerToast('Failed to send message: ' + error.message, 'error');
+    console.log("Attempting Supabase query...");
+    const { data: inquiryData, error: inquiryError } = await supabase.from('inquiries').insert([newInquiry]).select().maybeSingle();
+    console.log("Supabase insert response:", { inquiryData, inquiryError });
+    if (inquiryError) {
+      triggerToast('Failed to send message: ' + inquiryError.message, 'error');
       return;
+    }
+
+    if (!inquiryData) {
+      console.warn('Insert returned no data for inquiry; check RLS or table policies.');
     }
 
     setInquiries([{
