@@ -120,10 +120,16 @@ interface GasPrediction {
 
 interface AuthUser {
   id: string;
+  email?: string;
   username: string;
   phone: string;
   role: 'customer' | 'vendor' | 'rider' | 'admin';
   linkedEntityName?: string; // Links custom uploaded items
+  profilePhotoUrl?: string;
+  address?: string;
+  deliveryPoint?: string;
+  bio?: string;
+  pickupNote?: string;
 }
 
 const BASELINE_VENDORS: Vendor[] = [
@@ -203,9 +209,22 @@ export default function App() {
   });
   const [isAuthOpen, setIsAuthOpen] = useState<boolean>(false);
   const [authMode, setAuthMode] = useState<'login' | 'signup' | 'forgot'>('login');
-  const [authUsername, setAuthUsername] = useState<string>('');
-  const [authPhone, setAuthPhone] = useState<string>('');
-  const [authRole, setAuthRole] = useState<'customer' | 'vendor' | 'rider'>('customer');
+  const [authUsername, setAuthUsername] = useState<string>(currentUser?.username || '');
+  const [authEmail, setAuthEmail] = useState<string>(currentUser?.email || '');
+  const [authPhone, setAuthPhone] = useState<string>(currentUser?.phone || '');
+  const [authPassword, setAuthPassword] = useState<string>('');
+  const [authConfirmPassword, setAuthConfirmPassword] = useState<string>('');
+  let initialRole: 'customer' | 'vendor' | 'rider' = 'customer';
+  if (currentUser?.role === 'customer' || currentUser?.role === 'vendor' || currentUser?.role === 'rider') {
+    initialRole = currentUser.role;
+  }
+  const [authRole, setAuthRole] = useState<'customer' | 'vendor' | 'rider'>(initialRole);
+  const [profilePhotoUrl, setProfilePhotoUrl] = useState<string>(currentUser?.profilePhotoUrl || '');
+  const [profileAddress, setProfileAddress] = useState<string>(currentUser?.address || '');
+  const [profileDeliveryPoint, setProfileDeliveryPoint] = useState<string>(currentUser?.deliveryPoint || '');
+  const [profileBio, setProfileBio] = useState<string>(currentUser?.bio || '');
+  const [profilePickupNote, setProfilePickupNote] = useState<string>(currentUser?.pickupNote || '');
+  const [profileSaveLoading, setProfileSaveLoading] = useState<boolean>(false);
 
   // Interactive Local Concept States
   const [bodaPoolOption, setBodaPoolOption] = useState<boolean>(false);
@@ -223,6 +242,26 @@ export default function App() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [toastType, setToastType] = useState<'success' | 'error' | 'info'>('success');
 
+  const syncUserFields = (user: AuthUser | null) => {
+    if (!user) return;
+    setAuthUsername(user.username || '');
+    setAuthEmail(user.email || '');
+    setAuthPhone(user.phone || '');
+    const role: 'customer' | 'vendor' | 'rider' = user.role === 'customer'
+      ? 'customer'
+      : user.role === 'vendor'
+      ? 'vendor'
+      : user.role === 'rider'
+      ? 'rider'
+      : 'customer';
+    setAuthRole(role);
+    setProfilePhotoUrl(user.profilePhotoUrl || '');
+    setProfileAddress(user.address || '');
+    setProfileDeliveryPoint(user.deliveryPoint || '');
+    setProfileBio(user.bio || '');
+    setProfilePickupNote(user.pickupNote || '');
+  };
+
   const triggerToast = (msg: string, type: 'success' | 'error' | 'info' = 'success') => {
     setToastMessage(msg);
     setToastType(type);
@@ -236,6 +275,17 @@ export default function App() {
       console.error('Error signing out from Supabase:', e);
     }
     setCurrentUser(null);
+    setAuthUsername('');
+    setAuthEmail('');
+    setAuthPhone('');
+    setAuthPassword('');
+    setAuthConfirmPassword('');
+    setAuthRole('customer');
+    setProfilePhotoUrl('');
+    setProfileAddress('');
+    setProfileDeliveryPoint('');
+    setProfileBio('');
+    setProfilePickupNote('');
     localStorage.removeItem('mm_current_user');
     setCart([]);
     triggerToast('Logged out of platform session safely.', 'info');
@@ -581,26 +631,65 @@ export default function App() {
   const handleAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     console.log("Form submission started");
-    if (!authUsername || !authPhone) {
-      triggerToast('Complete username and telephone number!', 'error');
+    if (!authUsername || (!authEmail && !authPhone)) {
+      triggerToast('Complete username and either email or telephone number!', 'error');
       return;
+    }
+
+    const isLegacyPhoneLogin = authMode === 'login' && !authPassword && authPhone.trim() && !authEmail.trim();
+    if (authMode === 'login' && !authPassword && !isLegacyPhoneLogin) {
+      triggerToast('Enter your password to log in.', 'error');
+      return;
+    }
+
+    if (authMode === 'signup') {
+      if (!authEmail) {
+        triggerToast('Provide a valid email address when signing up.', 'error');
+        return;
+      }
+      if (!authPassword || !authConfirmPassword) {
+        triggerToast('Provide password and confirmation.', 'error');
+        return;
+      }
+      if (authPassword !== authConfirmPassword) {
+        triggerToast('Passwords do not match.', 'error');
+        return;
+      }
+      if (authPassword.length < 8) {
+        triggerToast('Password must be at least 8 characters long.', 'error');
+        return;
+      }
     }
 
     if (authMode === 'login') {
       console.log("Attempting Supabase Auth login...");
       try {
         const cleanPhone = authPhone.trim().replace(/\s+/g, '');
-        const dummyEmail = `${cleanPhone}@matchmarket.com`;
-        const dummyPassword = `pwd_${cleanPhone}`;
+        const loginEmail = authEmail.trim() || `${cleanPhone}@matchmarket.com`;
 
-        // 1. Sign in via Supabase Auth
-        const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
-          email: dummyEmail,
-          password: dummyPassword,
-        });
+        // 1. Sign in via Supabase Auth when a password is supplied.
+        let authData: { user: { id: string } | null } = { user: null };
+        let authError: Error | null = null;
+
+        if (!isLegacyPhoneLogin) {
+          const response = await supabase.auth.signInWithPassword({
+            email: loginEmail,
+            password: authPassword,
+          });
+          authData = response.data;
+          authError = response.error;
+        } else {
+          console.warn('Skipping password login and using legacy phone-based fallback.');
+          authError = new Error('Legacy phone login fallback');
+        }
 
         if (authError) {
-          // Fallback: If auth fails, try to check if they had a legacy database profile (username and phone match)
+          const isLegacyFallback = !authEmail.trim() && cleanPhone.length > 0;
+          if (!isLegacyFallback) {
+            triggerToast('Login failed: ' + authError.message, 'error');
+            return;
+          }
+          // Fallback: If auth fails and the user only provided phone, try legacy profile lookup.
           console.warn("Auth login failed, trying legacy query fallback:", authError.message);
           const { data: legacyData, error: legacyError } = await supabase
             .from('profiles')
@@ -623,6 +712,7 @@ export default function App() {
             linkedEntityName: legacyData.linked_entity_name || undefined
           };
           setCurrentUser(user);
+          syncUserFields(user);
           localStorage.setItem('mm_current_user', JSON.stringify(user));
           setIsAuthOpen(false);
           triggerToast(`Welcome back (Legacy), ${user.username}!`);
@@ -650,13 +740,22 @@ export default function App() {
         if (data) {
           const user: AuthUser = {
             id: data.id,
+            email: data.email || loginEmail,
             username: data.username,
             phone: data.phone,
             role: data.role as 'admin' | 'vendor' | 'customer',
-            linkedEntityName: data.linked_entity_name || undefined
+            linkedEntityName: data.linked_entity_name || undefined,
+            profilePhotoUrl: data.profile_photo_url || undefined,
+            address: data.address || undefined,
+            deliveryPoint: data.delivery_point || undefined,
+            bio: data.bio || undefined,
+            pickupNote: data.pickup_note || undefined
           };
           setCurrentUser(user);
+          syncUserFields(user);
           localStorage.setItem('mm_current_user', JSON.stringify(user));
+          setAuthPassword('');
+          setAuthConfirmPassword('');
           setIsAuthOpen(false);
           triggerToast(`Welcome back, ${user.username}!`);
         } else {
@@ -675,13 +774,18 @@ export default function App() {
             username: authUsername,
             phone: authPhone,
             role: assignedRole,
-            linked_entity_name: linkedName || null
+            linked_entity_name: linkedName || null,
+            email: loginEmail
           };
           
           const { data: insertData, error: insertError } = await supabase.from('profiles').insert([newProfile]).select().maybeSingle();
+          if (insertError) {
+            console.warn('Failed to create fallback profile record:', insertError.message);
+          }
           const userProfile = insertData || newProfile;
           const user: AuthUser = {
             id: userProfile.id,
+            email: userProfile.email || loginEmail,
             username: userProfile.username,
             phone: userProfile.phone,
             role: userProfile.role as 'admin' | 'vendor' | 'customer',
@@ -699,10 +803,6 @@ export default function App() {
     } else if (authMode === 'signup') {
       console.log("Attempting Supabase Auth registration...");
       try {
-        const cleanPhone = authPhone.trim().replace(/\s+/g, '');
-        const dummyEmail = `${cleanPhone}@matchmarket.com`;
-        const dummyPassword = `pwd_${cleanPhone}`;
-
         let assignedRole = authRole;
         let linkedName = '';
 
@@ -715,14 +815,24 @@ export default function App() {
         }
 
         // 1. Sign up user in Supabase Auth
+        const emailToUse = authEmail.trim();
+        const passwordToUse = authPassword;
+
         const { data: authData, error: authError } = await supabase.auth.signUp({
-          email: dummyEmail,
-          password: dummyPassword,
+          email: emailToUse,
+          password: passwordToUse,
           options: {
             data: {
               username: authUsername,
               phone: authPhone,
-              role: assignedRole
+              role: assignedRole,
+              full_name: authUsername,
+              email: emailToUse,
+              profile_photo_url: profilePhotoUrl || null,
+              address: profileAddress || null,
+              delivery_point: profileDeliveryPoint || null,
+              bio: profileBio || null,
+              pickup_note: profilePickupNote || null
             }
           }
         });
@@ -740,10 +850,16 @@ export default function App() {
 
         const newProfile = {
           id: userId, // Correct UUID from Auth
+          email: emailToUse,
           username: authUsername,
           phone: authPhone,
           role: assignedRole,
-          linked_entity_name: linkedName || null
+          linked_entity_name: linkedName || null,
+          profile_photo_url: profilePhotoUrl || null,
+          address: profileAddress || null,
+          delivery_point: profileDeliveryPoint || null,
+          bio: profileBio || null,
+          pickup_note: profilePickupNote || null
         };
 
         console.log("Inserting new profile to Supabase:", newProfile);
@@ -757,14 +873,23 @@ export default function App() {
 
         const user: AuthUser = {
           id: userId,
+          email: emailToUse,
           username: authUsername,
           phone: authPhone,
           role: assignedRole,
-          linkedEntityName: linkedName || undefined
+          linkedEntityName: linkedName || undefined,
+          profilePhotoUrl: profilePhotoUrl || undefined,
+          address: profileAddress || undefined,
+          deliveryPoint: profileDeliveryPoint || undefined,
+          bio: profileBio || undefined,
+          pickupNote: profilePickupNote || undefined
         };
 
         setCurrentUser(user);
+        syncUserFields(user);
         localStorage.setItem('mm_current_user', JSON.stringify(user));
+        setAuthPassword('');
+        setAuthConfirmPassword('');
         setIsAuthOpen(false);
         triggerToast(`Successfully registered account for ${authUsername}!`);
       } catch (err: unknown) {
@@ -772,6 +897,84 @@ export default function App() {
         triggerToast('Registration failed: ' + message, 'error');
       }
     }
+  };
+
+  const handleUpdateProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentUser) {
+      triggerToast('Please sign in before updating your profile.', 'error');
+      return;
+    }
+
+    setProfileSaveLoading(true);
+    const metadataUpdate: Record<string, string | null> = {
+      full_name: authUsername,
+      profile_photo_url: profilePhotoUrl || null,
+      address: profileAddress || null,
+      delivery_point: profileDeliveryPoint || null,
+      bio: profileBio || null,
+      pickup_note: profilePickupNote || null
+    };
+    if (authEmail) {
+      metadataUpdate.email = authEmail;
+    }
+    if (authPassword) {
+      metadataUpdate.password = authPassword;
+    }
+
+    const sessionResp = await supabase.auth.getSession();
+    if (sessionResp.data.session) {
+      const { error: authUpdateError } = await supabase.auth.updateUser({
+        email: authEmail || undefined,
+        password: authPassword || undefined,
+        data: metadataUpdate
+      });
+      if (authUpdateError) {
+        console.warn('Auth metadata update failed:', authUpdateError.message);
+        triggerToast('Profile auth update failed: ' + authUpdateError.message, 'error');
+        setProfileSaveLoading(false);
+        return;
+      }
+    }
+
+    const profileUpdate = {
+      id: currentUser.id,
+      username: authUsername,
+      phone: authPhone,
+      email: authEmail || currentUser.email || null,
+      profile_photo_url: profilePhotoUrl || null,
+      address: profileAddress || null,
+      delivery_point: profileDeliveryPoint || null,
+      bio: profileBio || null,
+      pickup_note: profilePickupNote || null
+    };
+    const { error: profileUpdateError } = await supabase
+      .from('profiles')
+      .upsert(profileUpdate, { onConflict: 'id' })
+      .select()
+      .maybeSingle();
+    if (profileUpdateError) {
+      console.warn('Profile table update failed:', profileUpdateError.message);
+      triggerToast('Profile save failed: ' + profileUpdateError.message, 'error');
+      setProfileSaveLoading(false);
+      return;
+    }
+
+    const updatedUser: AuthUser = {
+      ...currentUser,
+      email: authEmail || currentUser.email,
+      username: authUsername,
+      phone: authPhone,
+      profilePhotoUrl,
+      address: profileAddress,
+      deliveryPoint: profileDeliveryPoint,
+      bio: profileBio,
+      pickupNote: profilePickupNote
+    };
+    setCurrentUser(updatedUser);
+    localStorage.setItem('mm_current_user', JSON.stringify(updatedUser));
+    setProfileSaveLoading(false);
+    triggerToast('Profile updated successfully!', 'success');
   };
 
   const handleHelpSubmit = async (e: React.FormEvent) => {
@@ -1846,7 +2049,7 @@ export default function App() {
       {/* SECURE USER AUTH WINDOW */}
       {isAuthOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/90 backdrop-blur-xl">
-          <div className="w-full max-w-md liquid-glass-heavy rounded-2xl p-6 border border-white/15 relative">
+          <div className="w-full max-w-md liquid-glass-heavy rounded-2xl p-6 border border-white/15 relative max-h-[90vh] overflow-auto">
             <button 
               onClick={() => setIsAuthOpen(false)}
               className="absolute top-4 right-4 text-zinc-500 hover:text-white"
@@ -1871,6 +2074,16 @@ export default function App() {
                   />
                 </div>
                 <div>
+                  <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">Email (optional)</label>
+                  <input 
+                    type="email" 
+                    placeholder="e.g. jane@matchmarket.com"
+                    value={authEmail}
+                    onChange={(e) => setAuthEmail(e.target.value)}
+                    className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
+                  />
+                </div>
+                <div>
                   <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">Mobile Contact</label>
                   <input 
                     type="text" 
@@ -1878,6 +2091,16 @@ export default function App() {
                     value={authPhone}
                     onChange={(e) => setAuthPhone(e.target.value)}
                     className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white text-center font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">Password</label>
+                  <input 
+                    type="password" 
+                    placeholder="Enter your password"
+                    value={authPassword}
+                    onChange={(e) => setAuthPassword(e.target.value)}
+                    className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
                   />
                 </div>
                 <button type="submit" className="w-full py-2.5 bg-white text-black font-extrabold uppercase text-xs rounded-xl">
@@ -1913,6 +2136,88 @@ export default function App() {
                     placeholder="e.g. 0712345678"
                     value={authPhone}
                     onChange={(e) => setAuthPhone(e.target.value)}
+                    className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">Email Address</label>
+                  <input
+                    type="email"
+                    placeholder="e.g. jane@matchmarket.com"
+                    value={authEmail}
+                    onChange={(e) => setAuthEmail(e.target.value)}
+                    className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">Password</label>
+                    <input
+                      type="password"
+                      placeholder="Create password"
+                      value={authPassword}
+                      onChange={(e) => setAuthPassword(e.target.value)}
+                      className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">Confirm Password</label>
+                    <input
+                      type="password"
+                      placeholder="Confirm password"
+                      value={authConfirmPassword}
+                      onChange={(e) => setAuthConfirmPassword(e.target.value)}
+                      className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">Profile Picture URL</label>
+                  <input
+                    type="url"
+                    placeholder="Optional image link"
+                    value={profilePhotoUrl}
+                    onChange={(e) => setProfilePhotoUrl(e.target.value)}
+                    className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">Home / Pickup Address</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. 12 Mavazi Lane, Rongai"
+                    value={profileAddress}
+                    onChange={(e) => setProfileAddress(e.target.value)}
+                    className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">Delivery Point</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Maasai Lodge Route"
+                    value={profileDeliveryPoint}
+                    onChange={(e) => setProfileDeliveryPoint(e.target.value)}
+                    className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">Profile Bio</label>
+                  <textarea
+                    rows={2}
+                    placeholder="Tell us more about yourself"
+                    value={profileBio}
+                    onChange={(e) => setProfileBio(e.target.value)}
+                    className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">Pickup Notes</label>
+                  <textarea
+                    rows={2}
+                    placeholder="Any extra delivery or pickup instructions"
+                    value={profilePickupNote}
+                    onChange={(e) => setProfilePickupNote(e.target.value)}
                     className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
                   />
                 </div>
@@ -2086,7 +2391,7 @@ export default function App() {
       {/* MODAL 2: INTERACTIVE DASHBOARD SYSTEM */}
       {isDashboardOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/90 backdrop-blur-xl">
-          <div className="w-full max-w-5xl liquid-glass-heavy rounded-3xl p-6 border border-white/15 relative flex flex-col max-h-[90vh]">
+          <div className="w-full max-w-5xl liquid-glass-heavy rounded-3xl p-6 border border-white/15 relative flex flex-col max-h-[90vh] overflow-hidden">
             
             <button 
               onClick={() => setIsDashboardOpen(false)}
@@ -2124,8 +2429,118 @@ export default function App() {
               ))}
             </div>
 
-            <div className="flex-1 overflow-y-auto pr-2 min-h-0">
-              
+            <div className="flex-1 overflow-y-auto pr-2 min-h-0 space-y-6">
+              <div className="liquid-glass p-5 rounded-2xl border border-white/10 mb-6">
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">
+                <div>
+                  <h3 className="text-xs font-extrabold tracking-widest uppercase text-white">My Profile Settings</h3>
+                  <p className="text-[10px] text-zinc-400">Update your account details and delivery preferences.</p>
+                </div>
+                <span className="text-[10px] text-zinc-500 uppercase tracking-widest">Logged in as {currentUser?.username}</span>
+              </div>
+              <form onSubmit={handleUpdateProfile} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">Full Name</label>
+                  <input
+                    type="text"
+                    placeholder="Your name"
+                    value={authUsername}
+                    onChange={(e) => setAuthUsername(e.target.value)}
+                    className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">Email Address</label>
+                  <input
+                    type="email"
+                    placeholder="you@example.com"
+                    value={authEmail}
+                    onChange={(e) => setAuthEmail(e.target.value)}
+                    className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">Mobile Contact</label>
+                  <input
+                    type="text"
+                    placeholder="0712345678"
+                    value={authPhone}
+                    onChange={(e) => setAuthPhone(e.target.value)}
+                    className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">New Password</label>
+                  <input
+                    type="password"
+                    placeholder="Leave blank to keep current"
+                    value={authPassword}
+                    onChange={(e) => setAuthPassword(e.target.value)}
+                    className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
+                  />
+                </div>
+                <div className="md:col-span-2">
+                  <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">Profile Picture URL</label>
+                  <input
+                    type="url"
+                    placeholder="Image link (optional)"
+                    value={profilePhotoUrl}
+                    onChange={(e) => setProfilePhotoUrl(e.target.value)}
+                    className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
+                  />
+                </div>
+                <div className="md:col-span-2">
+                  <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">Home / Pickup Address</label>
+                  <input
+                    type="text"
+                    placeholder="12 Mavazi Lane, Rongai"
+                    value={profileAddress}
+                    onChange={(e) => setProfileAddress(e.target.value)}
+                    className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
+                  />
+                </div>
+                <div className="md:col-span-2">
+                  <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">Delivery Point</label>
+                  <input
+                    type="text"
+                    placeholder="Maasai Lodge Route"
+                    value={profileDeliveryPoint}
+                    onChange={(e) => setProfileDeliveryPoint(e.target.value)}
+                    className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
+                  />
+                </div>
+                <div className="md:col-span-2">
+                  <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">Profile Bio</label>
+                  <textarea
+                    rows={2}
+                    placeholder="Tell us more about yourself"
+                    value={profileBio}
+                    onChange={(e) => setProfileBio(e.target.value)}
+                    className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
+                  />
+                </div>
+                <div className="md:col-span-2">
+                  <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">Pickup Notes</label>
+                  <textarea
+                    rows={2}
+                    placeholder="Any extra delivery or pickup instructions"
+                    value={profilePickupNote}
+                    onChange={(e) => setProfilePickupNote(e.target.value)}
+                    className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
+                  />
+                </div>
+                <div className="md:col-span-2">
+                  <button
+                    type="submit"
+                    className="w-full py-3 bg-white text-black font-bold uppercase text-xs rounded-xl hover:bg-zinc-200 transition-all"
+                  >
+                    {profileSaveLoading ? 'Updating Profile...' : 'Update Profile'}
+                  </button>
+                </div>
+              </form>
+            </div>
+
+            <div className="space-y-6">
               {dashboardTab === 'customer' && (
                 <div className="space-y-6">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -2591,7 +3006,4 @@ export default function App() {
             </div>
           </div>
         </div>
-      )}
-    </div>
-  );
-}
+      }
