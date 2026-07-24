@@ -31,7 +31,7 @@ export function debugSupabaseInfo() {
   try {
     const host = supabaseUrl ? new URL(supabaseUrl).host : 'missing';
     console.info('Supabase host:', host, 'anon key present:', !!supabaseAnonKey);
-  } catch (e) {
+  } catch {
     console.info('Supabase config: (unable to parse host)');
   }
 }
