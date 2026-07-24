@@ -57,11 +57,11 @@ export const Ferrofluid: React.FC<FerrofluidProps> = (props) => {
     if (!canvasRef.current) return;
     const isWebGL2 = !!canvasRef.current.getContext('webgl2');
     if (!isWebGL2) return; // fallback renders empty canvas
-    const gl = canvasRef.current.getContext('webgl2') as WebGL2RenderingContext;
-    const renderer = new Renderer({ canvas: canvasRef.current, gl } as any);
+    const renderer = new Renderer({ canvas: canvasRef.current });
+    const gl = renderer.gl;
     const { width, height } = { width: canvasRef.current.width || 1, height: canvasRef.current.height || 1 };
 
-    const program = new Program(gl as any, {
+    const program = new Program(gl, {
       vertex: `
         attribute vec2 uv;
         varying vec2 vUv;
@@ -95,7 +95,7 @@ export const Ferrofluid: React.FC<FerrofluidProps> = (props) => {
       }
     });
 
-    const mesh = new Mesh(gl as any, { geometry: new Triangle(gl as any), program });
+    const mesh = new Mesh(gl, { geometry: new Triangle(gl), program });
     let animationId: number;
 
     const render = (t: number) => {
