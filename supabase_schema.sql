@@ -98,6 +98,7 @@ CREATE TABLE IF NOT EXISTS public.menu_items (
 -- 7. INQUIRIES (Help & Support Messages)
 CREATE TABLE IF NOT EXISTS public.inquiries (
   id TEXT PRIMARY KEY,
+  user_id TEXT,
   name TEXT,
   phone TEXT,
   topic TEXT,
@@ -106,6 +107,8 @@ CREATE TABLE IF NOT EXISTS public.inquiries (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+ALTER TABLE public.inquiries ADD COLUMN IF NOT EXISTS user_id TEXT;
+
 -- 8. VENDOR APPROVALS (Vendor Registration Request Queue)
 CREATE TABLE IF NOT EXISTS public.vendor_approvals (
   id TEXT PRIMARY KEY,
@@ -113,13 +116,11 @@ CREATE TABLE IF NOT EXISTS public.vendor_approvals (
   category TEXT NOT NULL,
   phone TEXT NOT NULL,
   login_email TEXT,
-  login_password TEXT,
   status TEXT DEFAULT 'Pending',
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 ALTER TABLE public.vendor_approvals ADD COLUMN IF NOT EXISTS login_email TEXT;
-ALTER TABLE public.vendor_approvals ADD COLUMN IF NOT EXISTS login_password TEXT;
 
 -- 9. RIDER APPROVALS (Boda Boda Rider Onboarding Request Queue)
 CREATE TABLE IF NOT EXISTS public.rider_approvals (
@@ -128,13 +129,11 @@ CREATE TABLE IF NOT EXISTS public.rider_approvals (
   motorcycle_plate TEXT NOT NULL,
   phone TEXT NOT NULL,
   login_email TEXT,
-  login_password TEXT,
   status TEXT DEFAULT 'Pending',
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 ALTER TABLE public.rider_approvals ADD COLUMN IF NOT EXISTS login_email TEXT;
-ALTER TABLE public.rider_approvals ADD COLUMN IF NOT EXISTS login_password TEXT;
 
 -- 10. CHAMA DEALS (Bulk Buying & Chama Group Buys)
 CREATE TABLE IF NOT EXISTS public.chama_deals (
