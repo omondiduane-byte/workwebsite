@@ -45,22 +45,12 @@ type FerrofluidProps = {
   mouseRadius?: number;
 };
 
-export const Ferrofluid: React.FC<FerrofluidProps> = ({
-  colors = ['#4F46E5', '#06B6D4', '#E0F2FE'],
-  speed = 0.5,
-  scale = 1.6,
-  turbulence = 1,
-  fluidity = 0.1,
-  rimWidth = 0.2,
-  sharpness = 2.5,
-  shimmer = 1.5,
-  glow = 2,
-  flowDirection = 'down',
-  opacity = 1,
-  mouseInteraction = true,
-  mouseStrength = 1,
-  mouseRadius = 0.35,
-}) => {
+export const Ferrofluid: React.FC<FerrofluidProps> = (props) => {
+  const {
+    colors = ['#4F46E5', '#06B6D4', '#E0F2FE'],
+    speed = 0.5,
+    opacity = 1,
+  } = props;
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -68,10 +58,10 @@ export const Ferrofluid: React.FC<FerrofluidProps> = ({
     const isWebGL2 = !!canvasRef.current.getContext('webgl2');
     if (!isWebGL2) return; // fallback renders empty canvas
     const gl = canvasRef.current.getContext('webgl2') as WebGL2RenderingContext;
-    const renderer = new Renderer({ canvas: canvasRef.current, gl });
-    const { width, height } = renderer.getSize();
+    const renderer = new Renderer({ canvas: canvasRef.current, gl } as any);
+    const { width, height } = { width: canvasRef.current.width || 1, height: canvasRef.current.height || 1 };
 
-    const program = new Program(gl, {
+    const program = new Program(gl as any, {
       vertex: `
         attribute vec2 uv;
         varying vec2 vUv;
@@ -92,6 +82,35 @@ export const Ferrofluid: React.FC<FerrofluidProps> = ({
           return mix(mix(hash(i+vec2(0.0,0.0)),hash(i+vec2(1.0,0.0)),f.x),
                      mix(hash(i+vec2(0.0,1.0)),hash(i+vec2(1.0,1.0)),f.x),f.y);
         }
-        void main(){
-          vec2 uv = vUv * resolution / min(resolution.x, resolution.y);
-          float n = noise(uv * 
+          float n = noise(uv * 3.0 + time * 0.2);
+          vec3 color = mix(colors[0], colors[1], n);
+          gl_FragColor = vec4(color, opacity);
+        }
+      `,
+      uniforms: {
+        time: { value: 0 },
+        resolution: { value: [width, height] },
+        opacity: { value: opacity },
+        colors: { value: prepColors(colors).arr.flat() }
+      }
+    });
+
+    const mesh = new Mesh(gl as any, { geometry: new Triangle(gl as any), program });
+    let animationId: number;
+
+    const render = (t: number) => {
+      program.uniforms.time.value = t * 0.001 * speed;
+      renderer.render({ scene: mesh });
+      animationId = requestAnimationFrame(render);
+    };
+    animationId = requestAnimationFrame(render);
+
+    return () => {
+      cancelAnimationFrame(animationId);
+    };
+  }, [colors, speed, opacity]);
+
+  return <canvas ref={canvasRef} className="ferrofluid-canvas" />;
+};
+
+export default Ferrofluid;

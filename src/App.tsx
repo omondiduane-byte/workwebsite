@@ -11,7 +11,12 @@ import {
 // import { inquiryService } from './services/inquiryService'; // unused - commented out to fix lint error
 
 // Utility functions defined locally to avoid missing module import errors
-const generateUniqueId = (prefix = 'id') => `${prefix}-${Math.random().toString(36).slice(2, 10)}-${Date.now().toString(36)}`;
+const generateUniqueId = (prefix = 'id') => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `${prefix}-${Math.random().toString(36).slice(2, 10)}-${Date.now().toString(36)}`;
+};
 const generateSecureOtp = () => Math.floor(1000 + Math.random() * 9000).toString();
 
 // Functions outside the React lifecycle prevent linter compilation crashes
@@ -48,12 +53,23 @@ interface CartItem {
 
 interface Inquiry {
   id: string;
+  userId?: string;
   name: string;
   phone: string;
   topic: string;
   message: string;
   timestamp: string;
   status: 'Pending' | 'Answered';
+  adminResponse?: string;
+}
+
+interface Notification {
+  id: string;
+  userId: string;
+  content: string;
+  createdAt: string;
+  read: boolean;
+  type: 'support' | 'system' | 'message';
 }
 
 interface VendorApprovalRequest {
@@ -63,6 +79,8 @@ interface VendorApprovalRequest {
   phone: string;
   status: 'Pending' | 'Approved' | 'Declined';
   timestamp: string;
+  loginEmail?: string;
+  loginPassword?: string;
 }
 
 interface DeliveryApprovalRequest {
@@ -72,6 +90,8 @@ interface DeliveryApprovalRequest {
   phone: string;
   status: 'Pending' | 'Approved' | 'Declined';
   timestamp: string;
+  loginEmail?: string;
+  loginPassword?: string;
 }
 
 interface DeliveryJob {
@@ -201,6 +221,7 @@ export default function App() {
   const [isCheckoutOpen, setIsCheckoutOpen] = useState<boolean>(false);
   const [isDashboardOpen, setIsDashboardOpen] = useState<boolean>(false);
   const [dashboardTab, setDashboardTab] = useState<'customer' | 'vendor' | 'rider' | 'admin'>('customer');
+  const [profileReturnTab, setProfileReturnTab] = useState<'customer' | 'vendor' | 'rider' | 'admin'>('customer');
 
   // Advanced Onboarding, Security & Authentication System States
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(() => {
@@ -301,6 +322,28 @@ export default function App() {
   const [chamaDeals, setChamaDeals] = useState<ChamaDeal[]>([]);
   const [gasPredictions, setGasPredictions] = useState<GasPrediction[]>([]);
   const [bannedVendors, setBannedVendors] = useState<string[]>([]);
+
+  const resolveRoleFromApprovals = (phone: string, fallbackRole: 'customer' | 'vendor' | 'rider') => {
+    if (vendorApprovals.some(req => req.phone === phone && req.status === 'Approved')) {
+      return 'vendor' as const;
+    }
+    if (riderApprovals.some(req => req.phone === phone && req.status === 'Approved')) {
+      return 'rider' as const;
+    }
+    return fallbackRole;
+  };
+
+  const hasVendorHubAccess = !!currentUser && (
+    currentUser.role === 'vendor' ||
+    vendorApprovals.some(req => req.phone === currentUser.phone && req.status === 'Approved') ||
+    vendors.some(v => v.approved && v.name.toLowerCase().includes((currentUser.username || '').toLowerCase()))
+  );
+
+  const hasRiderTransitAccess = !!currentUser && (
+    currentUser.role === 'rider' ||
+    riderApprovals.some(req => req.phone === currentUser.phone && req.status === 'Approved') ||
+    riderApprovals.some(req => req.riderName.toLowerCase() === (currentUser.username || '').toLowerCase() && req.status === 'Approved')
+  );
 
   // Load initial data from Supabase on mount
   useEffect(() => {
@@ -422,7 +465,7 @@ export default function App() {
           })));
         } else if (!dbDeliveryFleet || dbDeliveryFleet.length === 0) {
           const defaultJob = {
-            id: 'job1',
+            id: generateUniqueId('job'),
             order_id: 'ORD-98827',
             destination: 'Maasai Lodge Route',
             fee: 150,
@@ -469,7 +512,7 @@ export default function App() {
             vendor_name: string;
             status: 'Holding' | 'Released' | 'Refunded';
           } = {
-            id: 'tx1',
+            id: generateUniqueId('tx'),
             order_id: 'ORD-98827',
             amount: 650,
             payer: 'Customer (Jane)',
@@ -504,7 +547,7 @@ export default function App() {
           })));
         } else if (!dbChamaDeals || dbChamaDeals.length === 0) {
           const defaultDeal = {
-            id: 'c1',
+            id: generateUniqueId('chama'),
             title: '50KG Sack Red Onions (Soko Bulk Group Buy)',
             merchant: 'Kisero Nairobi (Soko Plaza)',
             category: 'M & M Soko',
@@ -570,14 +613,22 @@ export default function App() {
   const [helpTopic, setHelpTopic] = useState<string>('Payment Dispute');
   const [helpMsg, setHelpMsg] = useState<string>('');
 
+  // Notification and admin reply bindings
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [adminReplyText, setAdminReplyText] = useState<Record<string, string>>({});
+
   // Self Onboarding Registration Forms
   const [regShopName, setRegShopName] = useState<string>('');
   const [regCategory, setRegCategory] = useState<string>('Food & Beverages');
   const [regPhone, setRegPhone] = useState<string>('');
+  const [regShopPassword, setRegShopPassword] = useState<string>('');
+  const [regShopConfirmPassword, setRegShopConfirmPassword] = useState<string>('');
 
   const [regRiderName, setRegRiderName] = useState<string>('');
   const [regPlate, setRegPlate] = useState<string>('');
   const [regRiderPhone, setRegRiderPhone] = useState<string>('');
+  const [regRiderPassword, setRegRiderPassword] = useState<string>('');
+  const [regRiderConfirmPassword, setRegRiderConfirmPassword] = useState<string>('');
 
   // AI gas refill countdown configurations
   const [gasHousehold, setGasHousehold] = useState<string>('2');
@@ -760,7 +811,7 @@ export default function App() {
           triggerToast(`Welcome back, ${user.username}!`);
         } else {
           // If they exist in auth but not profiles, we create the profile
-          let assignedRole = authRole;
+          let assignedRole = resolveRoleFromApprovals(authPhone, authRole);
           let linkedName = '';
           if (assignedRole === 'customer') {
             const foundVendor = vendors.find(v => v.name.toLowerCase().includes(authUsername.toLowerCase()));
@@ -803,7 +854,7 @@ export default function App() {
     } else if (authMode === 'signup') {
       console.log("Attempting Supabase Auth registration...");
       try {
-        let assignedRole = authRole;
+        let assignedRole = resolveRoleFromApprovals(authPhone, authRole);
         let linkedName = '';
 
         if (assignedRole === 'customer') {
@@ -975,6 +1026,7 @@ export default function App() {
     localStorage.setItem('mm_current_user', JSON.stringify(updatedUser));
     setProfileSaveLoading(false);
     triggerToast('Profile updated successfully!', 'success');
+    setDashboardTab(profileReturnTab);
   };
 
   const handleHelpSubmit = async (e: React.FormEvent) => {
@@ -986,6 +1038,7 @@ export default function App() {
 
     const newInquiry = {
       id: generateUniqueId('i'),
+      userId: currentUser?.id,
       name: helpName,
       phone: helpPhone,
       topic: helpTopic,
@@ -1007,6 +1060,7 @@ export default function App() {
 
     setInquiries([{
       id: newInquiry.id,
+      userId: newInquiry.userId,
       name: newInquiry.name,
       phone: newInquiry.phone,
       topic: newInquiry.topic,
@@ -1015,10 +1069,60 @@ export default function App() {
       status: 'Pending'
     }, ...inquiries]);
 
+    if (currentUser) {
+      const newNotification = {
+        id: generateUniqueId('n'),
+        userId: currentUser.id,
+        content: `Support ticket submitted: ${helpTopic}`,
+        createdAt: new Date().toLocaleString(),
+        read: false,
+        type: 'support' as const
+      };
+      setNotifications([newNotification, ...notifications]);
+    }
+
     setHelpName('');
     setHelpPhone('');
     setHelpMsg('');
     triggerToast('Message sent successfully!', 'success');
+  };
+
+  const handleAdminReply = (inquiryId: string) => {
+    const reply = (adminReplyText[inquiryId] || '').trim();
+    if (!reply) {
+      triggerToast('Enter a reply message before sending.', 'error');
+      return;
+    }
+
+    const inquiry = inquiries.find((inq) => inq.id === inquiryId);
+    if (!inquiry) {
+      triggerToast('Support inquiry not found.', 'error');
+      return;
+    }
+
+    setInquiries(inquiries.map((inq) =>
+      inq.id === inquiryId
+        ? { ...inq, status: 'Answered', adminResponse: reply }
+        : inq
+    ));
+
+    if (inquiry.userId) {
+      const feedbackNotification = {
+        id: generateUniqueId('n'),
+        userId: inquiry.userId,
+        content: `Admin replied to your support ticket: ${reply}`,
+        createdAt: new Date().toLocaleString(),
+        read: false,
+        type: 'support' as const
+      };
+      setNotifications([feedbackNotification, ...notifications]);
+    }
+
+    setAdminReplyText({
+      ...adminReplyText,
+      [inquiryId]: ''
+    });
+    triggerToast(`Response sent for ${inquiry.name}'s inquiry.`, 'success');
   };
 
   const triggerMpesaEscrow = async () => {
@@ -1112,16 +1216,27 @@ export default function App() {
 
   const handleVendorRegisterSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!regShopName || !regPhone) {
-      triggerToast('Provide shop title and area of business details!', 'error');
+    if (!regShopName || !regPhone || !regShopPassword || !regShopConfirmPassword) {
+      triggerToast('Provide store details and a password for your dashboard!', 'error');
+      return;
+    }
+    if (regShopPassword !== regShopConfirmPassword) {
+      triggerToast('Vendor password and confirmation must match.', 'error');
+      return;
+    }
+    if (regShopPassword.length < 8) {
+      triggerToast('Password must be at least 8 characters long.', 'error');
       return;
     }
 
+    const emailForVendor = `${regPhone.replace(/\D/g, '')}@matchmarket.com`;
     const newRequest = {
       id: generateUniqueId('va'),
       shop_name: regShopName,
       category: regCategory,
       phone: regPhone,
+      login_email: emailForVendor,
+      login_password: regShopPassword,
       status: 'Pending'
     };
 
@@ -1137,26 +1252,40 @@ export default function App() {
       category: newRequest.category,
       phone: newRequest.phone,
       status: 'Pending',
-      timestamp: new Date().toLocaleString()
+      timestamp: new Date().toLocaleString(),
+      loginEmail: newRequest.login_email
     }, ...vendorApprovals]);
 
     setRegShopName('');
     setRegPhone('');
+    setRegShopPassword('');
+    setRegShopConfirmPassword('');
     triggerToast('Store network application successful! Please wait for approval.');
   };
 
   const handleRiderRegisterSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!regRiderName || !regPlate || !regRiderPhone) {
-      triggerToast('Complete rider identity details!', 'error');
+    if (!regRiderName || !regPlate || !regRiderPhone || !regRiderPassword || !regRiderConfirmPassword) {
+      triggerToast('Complete rider details and choose a password for your delivery login!', 'error');
+      return;
+    }
+    if (regRiderPassword !== regRiderConfirmPassword) {
+      triggerToast('Rider password and confirmation must match.', 'error');
+      return;
+    }
+    if (regRiderPassword.length < 8) {
+      triggerToast('Password must be at least 8 characters long.', 'error');
       return;
     }
 
+    const emailForRider = `${regRiderPhone.replace(/\D/g, '')}@matchmarket.com`;
     const newRequest = {
       id: generateUniqueId('ra'),
       rider_name: regRiderName,
       motorcycle_plate: regPlate,
       phone: regRiderPhone,
+      login_email: emailForRider,
+      login_password: regRiderPassword,
       status: 'Pending'
     };
 
@@ -1172,12 +1301,15 @@ export default function App() {
       motorcyclePlate: newRequest.motorcycle_plate,
       phone: newRequest.phone,
       status: 'Pending',
-      timestamp: new Date().toLocaleString()
+      timestamp: new Date().toLocaleString(),
+      loginEmail: newRequest.login_email
     }, ...riderApprovals]);
 
     setRegRiderName('');
     setRegPlate('');
     setRegRiderPhone('');
+    setRegRiderPassword('');
+    setRegRiderConfirmPassword('');
     triggerToast('Rider transit application successful! Please wait for approval.');
   };
 
@@ -1361,6 +1493,27 @@ export default function App() {
 
     setRiderApprovals(riderApprovals.map(r => r.id === req.id ? { ...r, status: 'Approved' } : r));
     triggerToast(`Granted dispatch clearance to rider: ${req.riderName}!`, 'success');
+  };
+
+  const releaseEscrowForAdmin = async (orderId: string) => {
+    const { error: jobErr } = await supabase
+      .from('delivery_jobs')
+      .update({ status: 'Delivered' })
+      .eq('order_id', orderId);
+
+    const { error: txErr } = await supabase
+      .from('escrow_transactions')
+      .update({ status: 'Released' })
+      .eq('order_id', orderId);
+
+    if (jobErr || txErr) {
+      triggerToast('Failed to release escrow order: ' + (jobErr?.message || txErr?.message), 'error');
+      return;
+    }
+
+    setDeliveryFleet(deliveryFleet.map(job => job.orderId === orderId ? { ...job, status: 'Delivered' } : job));
+    setEscrowLedger(escrowLedger.map(tx => tx.orderId === orderId ? { ...tx, status: 'Released' } : tx));
+    triggerToast('Escrow order released successfully.', 'success');
   };
 
   const toggleBanVendor = async (storeName: string) => {
@@ -2417,7 +2570,10 @@ export default function App() {
               ].map((item) => (
                 <button
                   key={item.tab}
-                  onClick={() => setDashboardTab(item.tab as 'customer' | 'vendor' | 'rider' | 'admin')}
+                  onClick={() => {
+                    setDashboardTab(item.tab as 'customer' | 'vendor' | 'rider' | 'admin');
+                    setProfileReturnTab(item.tab as 'customer' | 'vendor' | 'rider' | 'admin');
+                  }}
                   className={`px-4 py-2.5 rounded-lg text-xs font-bold uppercase tracking-wider whitespace-nowrap transition-all ${
                     dashboardTab === item.tab 
                       ? 'bg-white text-black shadow-lg' 
@@ -2529,12 +2685,19 @@ export default function App() {
                     className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
                   />
                 </div>
-                <div className="md:col-span-2">
+                <div className="md:col-span-2 flex flex-col gap-2">
                   <button
                     type="submit"
                     className="w-full py-3 bg-white text-black font-bold uppercase text-xs rounded-xl hover:bg-zinc-200 transition-all"
                   >
                     {profileSaveLoading ? 'Updating Profile...' : 'Update Profile'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDashboardTab(profileReturnTab)}
+                    className="w-full py-2.5 border border-white/10 rounded-xl text-[10px] font-bold uppercase tracking-wider text-zinc-300 hover:text-white hover:bg-white/10 transition-all"
+                  >
+                    Back to previous view
                   </button>
                 </div>
               </form>
@@ -2543,6 +2706,72 @@ export default function App() {
             <div className="space-y-6">
               {dashboardTab === 'customer' && (
                 <div className="space-y-6">
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <div className="liquid-glass p-5 rounded-2xl border border-white/10 space-y-3">
+                      <h3 className="text-xs font-extrabold tracking-widest uppercase text-white">Messages & Notifications</h3>
+                      <p className="text-[10px] text-zinc-400">Your customer messages, support ticket activity, and system notifications.</p>
+                      {!currentUser ? (
+                        <p className="text-xs text-zinc-500">Sign in to view your support inbox and notifications.</p>
+                      ) : (
+                        <div className="space-y-3">
+                          <div className="bg-zinc-950 p-3 rounded-xl border border-white/5 text-[10px] text-zinc-400">
+                            <div className="flex justify-between mb-2">
+                              <span>Unread</span>
+                              <span className="font-bold text-white">{notifications.filter((note) => note.userId === currentUser.id && !note.read).length}</span>
+                            </div>
+                            <div className="space-y-2 max-h-32 overflow-y-auto">
+                              {notifications.filter((note) => note.userId === currentUser.id).map((note) => (
+                                <div key={note.id} className={`rounded-xl p-2 ${note.read ? 'bg-white/5 text-zinc-300' : 'bg-white text-black'}`}>
+                                  <div className="text-[9px] uppercase tracking-widest text-zinc-400">{note.type}</div>
+                                  <div className="text-[11px] font-bold">{note.content}</div>
+                                  <div className="text-[8px] uppercase tracking-wider text-zinc-500 mt-1">{note.createdAt}</div>
+                                </div>
+                              ))}
+                              {notifications.filter((note) => note.userId === currentUser.id).length === 0 && (
+                                <p className="text-xs text-zinc-500">No notifications yet.</p>
+                              )}
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => setNotifications(notifications.map((note) => note.userId === currentUser.id ? { ...note, read: true } : note))}
+                            className="w-full py-2 rounded-xl bg-white text-black uppercase text-[10px] font-bold hover:bg-zinc-200 transition-all"
+                          >
+                            Mark all read
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                    <div className="liquid-glass p-5 rounded-2xl border border-white/10 space-y-3 lg:col-span-2">
+                      <h3 className="text-xs font-extrabold tracking-widest uppercase text-white">Support Chat Space</h3>
+                      <p className="text-[10px] text-zinc-400">Review past inquiries and admin replies here.</p>
+                      {!currentUser ? (
+                        <p className="text-xs text-zinc-500">Sign in to view your chat history.</p>
+                      ) : (
+                        <div className="space-y-3 max-h-80 overflow-y-auto">
+                          {inquiries.filter((inq) => inq.userId === currentUser.id || inq.phone === currentUser.phone).map((inq) => (
+                            <div key={inq.id} className="p-4 rounded-2xl bg-black border border-white/5 space-y-2">
+                              <div className="flex justify-between items-center text-[10px] text-zinc-500">
+                                <span>{inq.topic}</span>
+                                <span className="uppercase tracking-widest">{inq.status}</span>
+                              </div>
+                              <p className="text-xs text-zinc-400 italic">Customer: {inq.message}</p>
+                              {inq.adminResponse ? (
+                                <div className="bg-white/5 p-3 rounded-xl">
+                                  <div className="text-[10px] uppercase tracking-widest text-zinc-400">Admin Reply</div>
+                                  <p className="text-xs text-white">{inq.adminResponse}</p>
+                                </div>
+                              ) : (
+                                <p className="text-xs text-zinc-500">No admin response yet.</p>
+                              )}
+                            </div>
+                          ))}
+                          {inquiries.filter((inq) => inq.userId === currentUser.id || inq.phone === currentUser.phone).length === 0 && (
+                            <p className="text-xs text-zinc-500">You have no support chats yet. Use the help desk to create a ticket.</p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="liquid-glass p-5 rounded-2xl border border-white/10">
                       <h3 className="text-xs font-extrabold tracking-widest uppercase text-white mb-3">Live Payment Records</h3>
@@ -2590,7 +2819,7 @@ export default function App() {
               {/* RESTRICTED VENDOR ONBOARDING SCREEN (Resolves image_964950.png) */}
               {dashboardTab === 'vendor' && (
                 <div>
-                  {!currentUser || (currentUser.role !== 'vendor' && !vendors.find(v => v.name.toLowerCase().includes(currentUser.username.toLowerCase()) && v.approved)) ? (
+                  {!hasVendorHubAccess ? (
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                       <div className="liquid-glass p-5 rounded-2xl border border-white/10 space-y-4">
                         <div>
@@ -2635,95 +2864,31 @@ export default function App() {
                             />
                           </div>
 
-                          <button 
-                            type="submit"
-                            className="w-full py-2.5 bg-white text-black font-bold uppercase tracking-widest text-xs rounded-xl hover:bg-zinc-200 transition-all"
-                          >
+                          <div className="grid grid-cols-2 gap-4">
+                            <div>
+                              <label className="block text-[9px] font-bold uppercase tracking-wider text-zinc-400 mb-1">Password *</label>
+                              <input 
+                                type="password" 
+                                placeholder="Create dashboard password"
+                                value={regShopPassword}
+                                onChange={(e) => setRegShopPassword(e.target.value)}
+                                className="w-full bg-black border border-white/10 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-white/40 text-white"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-[9px] font-bold uppercase tracking-wider text-zinc-400 mb-1">Confirm Password *</label>
+                              <input 
+                                type="password" 
+                                placeholder="Confirm password"
+                                value={regShopConfirmPassword}
+                                onChange={(e) => setRegShopConfirmPassword(e.target.value)}
+                                className="w-full bg-black border border-white/10 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-white/40 text-white"
+                              />
+                            </div>
+                          </div>
+
+                          <button type="submit" className="w-full py-2.5 bg-white text-black font-bold uppercase tracking-widest text-xs rounded-xl hover:bg-zinc-200 transition-all">
                             complete?
-                          </button>
-                        </form>
-                      </div>
-
-                      {/* Restricted Overlay - Solves side-by-side issue from image_964950.png */}
-                      <div className="liquid-glass p-8 rounded-2xl border border-white/10 flex flex-col items-center justify-center text-center relative overflow-hidden">
-                        <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex flex-col items-center justify-center p-6 space-y-3 z-10">
-                          <Lock className="w-12 h-12 text-zinc-500 animate-pulse" />
-                          <h4 className="text-sm font-bold uppercase text-white">Item Management Restricted</h4>
-                          <p className="text-xs text-zinc-400 max-w-sm leading-relaxed">
-                            Review required. Submit registration application details and wait for clearance to upload items.
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    /* Fully Approved Vendor Suite */
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                      <div className="liquid-glass p-5 rounded-2xl border border-white/10 space-y-4">
-                        <h3 className="text-xs font-extrabold tracking-widest uppercase text-white">Upload Catalog Product</h3>
-                        
-                        <form onSubmit={handleCustomProductUpload} className="space-y-4">
-                          <div className="grid grid-cols-2 gap-4">
-                            <div>
-                              <label className="block text-[9px] font-bold uppercase tracking-wider text-zinc-400 mb-1">Item Title *</label>
-                              <input 
-                                type="text" 
-                                placeholder="e.g. Fresh Goat Meat"
-                                value={newProductTitle}
-                                onChange={(e) => setNewProductTitle(e.target.value)}
-                                className="w-full bg-black border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
-                              />
-                            </div>
-                            <div>
-                              <label className="block text-[9px] font-bold uppercase tracking-wider text-zinc-400 mb-1">Price (Ksh) *</label>
-                              <input 
-                                type="Amount:" 
-                                placeholder="e.g. 600"
-                                value={newProductPrice}
-                                onChange={(e) => setNewProductPrice(e.target.value)}
-                                className="w-full bg-black border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
-                              />
-                            </div>
-                          </div>
-
-                          <div className="grid grid-cols-2 gap-4">
-                            <div>
-                              <label className="block text-[9px] font-bold uppercase tracking-wider text-zinc-400 mb-1">Category *</label>
-                              <select
-                                value={newProductCategory}
-                                onChange={(e) => setNewProductCategory(e.target.value)}
-                                className="w-full bg-black border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
-                              >
-                                <option value="Food & Beverages">Food & Beverages</option>
-                                <option value="M & M Soko">M & M Soko</option>
-                                <option value="M & M Services">M & M Services</option>
-                                <option value="M & M Fun Zone">M & M Fun Zone</option>
-                              </select>
-                            </div>
-                            <div>
-                              <label className="block text-[9px] font-bold uppercase tracking-wider text-zinc-400 mb-1">Store Name Confirmation *</label>
-                              <input 
-                                type="text" 
-                                placeholder="e.g. 7th Sunday"
-                                value={newProductStore}
-                                onChange={(e) => setNewProductStore(e.target.value)}
-                                className="w-full bg-black border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
-                              />
-                            </div>
-                          </div>
-
-                          <div>
-                            <label className="block text-[9px] font-bold uppercase tracking-wider text-zinc-400 mb-1">Product Description</label>
-                            <textarea 
-                              placeholder="Describe product..."
-                              rows={2}
-                              value={newProductDesc}
-                              onChange={(e) => setNewProductDesc(e.target.value)}
-                              className="w-full bg-black border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
-                            />
-                          </div>
-
-                          <button type="submit" className="w-full py-2.5 bg-white text-black font-extrabold uppercase text-xs rounded-xl hover:bg-zinc-200">
-                            Place to Hub?
                           </button>
                         </form>
                       </div>
@@ -2748,6 +2913,100 @@ export default function App() {
                         </div>
                       </div>
                     </div>
+                  ) : (
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                      <div className="liquid-glass p-5 rounded-2xl border border-white/10 space-y-4">
+                        <div>
+                          <h3 className="text-xs font-extrabold tracking-widest uppercase text-white mb-1">Upload New Product</h3>
+                          <p className="text-[10px] text-zinc-500 uppercase tracking-wider font-semibold">Add items to your marketplace catalog</p>
+                        </div>
+
+                        <form onSubmit={handleCustomProductUpload} className="space-y-4">
+                          <div>
+                            <label className="block text-[9px] font-bold uppercase tracking-wider text-zinc-400 mb-1">Product Title *</label>
+                            <input
+                              type="text"
+                              placeholder="e.g. Beef Pilau Royal"
+                              value={newProductTitle}
+                              onChange={(e) => setNewProductTitle(e.target.value)}
+                              className="w-full bg-black border border-white/10 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-white/40 text-white"
+                            />
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-4">
+                            <div>
+                              <label className="block text-[9px] font-bold uppercase tracking-wider text-zinc-400 mb-1">Price (Ksh) *</label>
+                              <input
+                                type="number"
+                                placeholder="e.g. 250"
+                                value={newProductPrice}
+                                onChange={(e) => setNewProductPrice(e.target.value)}
+                                className="w-full bg-black border border-white/10 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-white/40 text-white"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-[9px] font-bold uppercase tracking-wider text-zinc-400 mb-1">Category *</label>
+                              <select
+                                value={newProductCategory}
+                                onChange={(e) => setNewProductCategory(e.target.value)}
+                                className="w-full bg-black border border-white/10 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-white/40 text-white"
+                              >
+                                <option value="Food & Beverages">Food & Beverages</option>
+                                <option value="M & M Soko">M & M Soko (Groceries)</option>
+                                <option value="M & M Services">M & M Services</option>
+                                <option value="M & M Fun Zone">M & M Fun Zone</option>
+                              </select>
+                            </div>
+                          </div>
+
+                          <div>
+                            <label className="block text-[9px] font-bold uppercase tracking-wider text-zinc-400 mb-1">Store Name *</label>
+                            <input
+                              type="text"
+                              placeholder="e.g. Yusuf Dishes (Rongai Stage)"
+                              value={newProductStore}
+                              onChange={(e) => setNewProductStore(e.target.value)}
+                              className="w-full bg-black border border-white/10 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-white/40 text-white"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="block text-[9px] font-bold uppercase tracking-wider text-zinc-400 mb-1">Description</label>
+                            <textarea
+                              placeholder="Short description of the product..."
+                              value={newProductDesc}
+                              onChange={(e) => setNewProductDesc(e.target.value)}
+                              rows={3}
+                              className="w-full bg-black border border-white/10 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-white/40 text-white resize-none"
+                            />
+                          </div>
+
+                          <button type="submit" className="w-full py-2.5 bg-white text-black font-bold uppercase tracking-widest text-xs rounded-xl hover:bg-zinc-200 transition-all">
+                            Publish Product
+                          </button>
+                        </form>
+                      </div>
+
+                      <div className="liquid-glass p-5 rounded-2xl border border-white/10 space-y-4">
+                        <h3 className="text-xs font-extrabold tracking-widest uppercase text-white">Your Listed Catalog & Ads</h3>
+                        <div className="space-y-3 max-h-96 overflow-y-auto">
+                          {customMarketplace.map((item) => (
+                            <div key={item.id} className="p-3 bg-black rounded-lg border border-white/5 flex justify-between items-center text-xs">
+                              <div>
+                                <p className="font-bold text-white">{item.name}</p>
+                                <p className="text-[9px] text-zinc-500">Ksh {item.price} · {item.storeName}</p>
+                              </div>
+                              <button
+                                onClick={() => purchaseAdBanner(item.id)}
+                                className="px-2.5 py-1.5 bg-yellow-500 hover:bg-yellow-400 text-black font-black uppercase text-[9px] rounded-lg tracking-wider transition-colors"
+                              >
+                                Feature Ad (Ksh 500)
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
                   )}
                 </div>
               )}
@@ -2755,7 +3014,7 @@ export default function App() {
               {/* RESTRICTED RIDER ONBOARDING SCREEN (Resolves image_9649aa.png) */}
               {dashboardTab === 'rider' && (
                 <div>
-                  {!currentUser || (currentUser.role !== 'rider' && !riderApprovals.find(r => r.riderName.toLowerCase() === currentUser.username.toLowerCase() && r.status === 'Approved')) ? (
+                  {!hasRiderTransitAccess ? (
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                       <div className="liquid-glass p-5 rounded-2xl border border-white/10 space-y-4">
                         <div>
@@ -2795,6 +3054,29 @@ export default function App() {
                               onChange={(e) => setRegRiderPhone(e.target.value)}
                               className="w-full bg-black border border-white/10 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-white/40 text-white"
                             />
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-4">
+                            <div>
+                              <label className="block text-[9px] font-bold uppercase tracking-wider text-zinc-400 mb-1">Password *</label>
+                              <input 
+                                type="password" 
+                                placeholder="Create password"
+                                value={regRiderPassword}
+                                onChange={(e) => setRegRiderPassword(e.target.value)}
+                                className="w-full bg-black border border-white/10 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-white/40 text-white"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-[9px] font-bold uppercase tracking-wider text-zinc-400 mb-1">Confirm Password *</label>
+                              <input 
+                                type="password" 
+                                placeholder="Confirm password"
+                                value={regRiderConfirmPassword}
+                                onChange={(e) => setRegRiderConfirmPassword(e.target.value)}
+                                className="w-full bg-black border border-white/10 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-white/40 text-white"
+                              />
+                            </div>
                           </div>
 
                           <button 
@@ -2977,6 +3259,36 @@ export default function App() {
                     </div>
                   </div>
 
+                  <div className="liquid-glass p-5 rounded-2xl border border-white/10 space-y-3">
+                    <h3 className="text-xs font-extrabold tracking-widest uppercase text-white border-b border-white/5 pb-2">
+                      Escrow & Delivery Release Queue
+                    </h3>
+                    <div className="space-y-3 max-h-62.5 overflow-y-auto">
+                      {escrowLedger.filter(tx => tx.status === 'Holding').length === 0 ? (
+                        <p className="text-xs text-zinc-500">No escrow funds are awaiting release at the moment.</p>
+                      ) : (
+                        escrowLedger.filter(tx => tx.status === 'Holding').map((tx) => (
+                          <div key={tx.id} className="p-3 rounded-xl bg-black border border-white/5 space-y-2">
+                            <div className="flex justify-between items-center text-xs">
+                              <span className="font-bold text-white">{tx.orderId}</span>
+                              <span className="text-[9px] bg-zinc-800 px-2 py-0.5 rounded">{tx.vendorName}</span>
+                            </div>
+                            <div className="flex justify-between text-[10px] text-zinc-500">
+                              <span>Payer: {tx.payer}</span>
+                              <span className="text-white font-bold">Ksh {tx.amount}</span>
+                            </div>
+                            <button
+                              onClick={() => releaseEscrowForAdmin(tx.orderId)}
+                              className="w-full py-2 bg-white text-black rounded text-[9px] font-extrabold uppercase"
+                            >
+                              Release Order Funds
+                            </button>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
                   {/* CUSTOM HELP Desk communication streams */}
                   <div className="liquid-glass p-5 rounded-2xl border border-white/10 mt-6">
                     <h3 className="text-xs font-extrabold tracking-widest uppercase text-white border-b border-white/5 pb-2 mb-3">
@@ -2997,6 +3309,29 @@ export default function App() {
                           <p className="text-xs text-zinc-400 bg-zinc-950 p-2 rounded-lg italic">
                             "{inq.message}"
                           </p>
+                          {inq.adminResponse && (
+                            <div className="bg-white/5 p-3 rounded-xl text-xs text-white">
+                              <div className="font-bold uppercase tracking-widest text-zinc-400 mb-1">Admin Response</div>
+                              {inq.adminResponse}
+                            </div>
+                          )}
+                          {inq.status !== 'Answered' && (
+                            <div className="space-y-2">
+                              <textarea
+                                rows={2}
+                                placeholder="Write a reply to the customer"
+                                value={adminReplyText[inq.id] || ''}
+                                onChange={(e) => setAdminReplyText({ ...adminReplyText, [inq.id]: e.target.value })}
+                                className="w-full bg-black border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
+                              />
+                              <button
+                                onClick={() => handleAdminReply(inq.id)}
+                                className="w-full py-2 rounded-xl bg-white text-black uppercase text-[9px] font-bold hover:bg-zinc-200 transition-all"
+                              >
+                                Reply to inquiry
+                              </button>
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -3006,4 +3341,8 @@ export default function App() {
             </div>
           </div>
         </div>
-      }
+      </div>
+    )}
+  </div>
+);
+}

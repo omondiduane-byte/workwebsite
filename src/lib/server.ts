@@ -1,3 +1,4 @@
+/// <reference types="node" />
 import { createServerClient, parseCookieHeader, serializeCookieHeader } from '@supabase/ssr'
 
 export function createClient(request: Request) {
