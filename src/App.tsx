@@ -80,6 +80,7 @@ interface VendorApprovalRequest {
   status: 'Pending' | 'Approved' | 'Declined';
   timestamp: string;
   loginEmail?: string;
+  loginPassword?: string;
 }
 
 interface DeliveryApprovalRequest {
@@ -90,6 +91,7 @@ interface DeliveryApprovalRequest {
   status: 'Pending' | 'Approved' | 'Declined';
   timestamp: string;
   loginEmail?: string;
+  loginPassword?: string;
 }
 
 interface DeliveryJob {
@@ -414,7 +416,6 @@ export default function App() {
             phone: item.phone,
             topic: item.topic,
             message: item.message,
-            userId: item.user_id ?? undefined,
             timestamp: new Date(item.created_at).toLocaleString(),
             status: item.status as 'Pending' | 'Answered'
           })));
@@ -1037,7 +1038,7 @@ export default function App() {
 
     const newInquiry = {
       id: generateUniqueId('i'),
-      user_id: currentUser?.id ?? null,
+      userId: currentUser?.id,
       name: helpName,
       phone: helpPhone,
       topic: helpTopic,
@@ -1059,7 +1060,7 @@ export default function App() {
 
     setInquiries([{
       id: newInquiry.id,
-      userId: newInquiry.user_id ?? undefined,
+      userId: newInquiry.userId,
       name: newInquiry.name,
       phone: newInquiry.phone,
       topic: newInquiry.topic,
@@ -1235,6 +1236,7 @@ export default function App() {
       category: regCategory,
       phone: regPhone,
       login_email: emailForVendor,
+      login_password: regShopPassword,
       status: 'Pending'
     };
 
@@ -1283,6 +1285,7 @@ export default function App() {
       motorcycle_plate: regPlate,
       phone: regRiderPhone,
       login_email: emailForRider,
+      login_password: regRiderPassword,
       status: 'Pending'
     };
 
