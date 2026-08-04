@@ -412,10 +412,12 @@ export default function App() {
         if (dbInquiries) {
           setInquiries(dbInquiries.map(item => ({
             id: item.id,
+            userId: item.user_id || undefined,
             name: item.name,
             phone: item.phone,
             topic: item.topic,
             message: item.message,
+            adminResponse: item.admin_response || undefined,
             timestamp: new Date(item.created_at).toLocaleString(),
             status: item.status as 'Pending' | 'Answered'
           })));
@@ -430,7 +432,9 @@ export default function App() {
             category: item.category,
             phone: item.phone,
             status: item.status as 'Pending' | 'Approved' | 'Declined',
-            timestamp: new Date(item.created_at).toLocaleString()
+            timestamp: new Date(item.created_at).toLocaleString(),
+            loginEmail: item.login_email || undefined,
+            loginPassword: item.login_password || undefined
           })));
         }
 
@@ -443,7 +447,9 @@ export default function App() {
             motorcyclePlate: item.motorcycle_plate,
             phone: item.phone,
             status: item.status as 'Pending' | 'Approved' | 'Declined',
-            timestamp: new Date(item.created_at).toLocaleString()
+            timestamp: new Date(item.created_at).toLocaleString(),
+            loginEmail: item.login_email || undefined,
+            loginPassword: item.login_password || undefined
           })));
         }
 
@@ -1087,7 +1093,7 @@ export default function App() {
     triggerToast('Message sent successfully!', 'success');
   };
 
-  const handleAdminReply = (inquiryId: string) => {
+  const handleAdminReply = async (inquiryId: string) => {
     const reply = (adminReplyText[inquiryId] || '').trim();
     if (!reply) {
       triggerToast('Enter a reply message before sending.', 'error');
@@ -1097,6 +1103,16 @@ export default function App() {
     const inquiry = inquiries.find((inq) => inq.id === inquiryId);
     if (!inquiry) {
       triggerToast('Support inquiry not found.', 'error');
+      return;
+    }
+
+    const { error } = await supabase
+      .from('inquiries')
+      .update({ admin_response: reply, status: 'Answered' })
+      .eq('id', inquiryId);
+
+    if (error) {
+      triggerToast('Failed to save reply: ' + error.message, 'error');
       return;
     }
 
@@ -1638,10 +1654,9 @@ export default function App() {
     setCookieConsent(choice);
     localStorage.setItem('mm_cookie_consent', choice);
     triggerToast(`Cookie parameters configured: ${choice}`, 'info');
-  };
-
+  }
   return (
-    <div className="min-h-screen bg-black text-white relative overflow-x-hidden font-sans">
+    <div className="min-h-screen bg-r text-white relative overflow-x-hidden font-sans">
       
       {/* Dynamic CSS Styling Injector - Solves all unstyled local compiler issues */}
       <style>{`
@@ -1712,10 +1727,10 @@ export default function App() {
       )}
 
       {/* NAVIGATION HEADER BAR */}
-      <header className="sticky top-0 z-40 w-full backdrop-blur-xl bg-black/80 border-b border-white/10 px-4 py-4">
+      <header className="sticky top-0 z-40 w-full backdrop-blur-xl bg-red/80 border-b border-white/10 px-4 py-4">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-lg flex items-center justify-center bg-white text-black font-black tracking-tighter text-xl">
+            <div className="w-10 h-10 rounded-lg flex items-center justify-center bg-white text-red font-black tracking-tighter text-xl">
               M
             </div>
             <div>
@@ -1743,7 +1758,7 @@ export default function App() {
                 </span>
                 <button 
                   onClick={() => setIsDashboardOpen(true)}
-                  className="px-4 py-2 rounded-full text-xs font-semibold uppercase tracking-wider text-black bg-white hover:bg-zinc-200 transition-all"
+                  className="px-4 py-2 rounded-full text-xs font-semibold uppercase tracking-wider text-red bg-white hover:bg-zinc-200 transition-all"
                 >
                   My M & M Hub
                 </button>
@@ -1758,7 +1773,7 @@ export default function App() {
             ) : (
               <button 
                 onClick={() => { setAuthMode('login'); setIsAuthOpen(true); }}
-                className="px-4 py-2 rounded-full text-xs font-bold uppercase tracking-wider text-black bg-white hover:bg-zinc-200 transition-all"
+                className="px-4 py-2 rounded-full text-xs font-bold uppercase tracking-wider text-red bg-white hover:bg-zinc-200 transition-all"
               >
                 Sign In
               </button>
@@ -1798,7 +1813,7 @@ export default function App() {
                   </div>
                   <button
                     onClick={() => addToCart(item)}
-                    className="p-2 rounded-lg bg-white text-black hover:bg-zinc-200 transition-colors"
+                    className="p-2 rounded-lg bg-white text-red hover:bg-zinc-200 transition-colors"
                   >
                     <Plus className="w-4 h-4" />
                   </button>

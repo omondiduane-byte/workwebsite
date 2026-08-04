@@ -1,0 +1,1 @@
+React + TypeScript single-page marketplace application built with Vite, Tailwind CSS, and Supabase, providing customer, vendor, rider, and admin interfaces for ordering, delivery, escrow payments, and group deals.

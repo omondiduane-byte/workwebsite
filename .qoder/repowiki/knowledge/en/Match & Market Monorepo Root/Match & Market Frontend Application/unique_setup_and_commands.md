@@ -1,0 +1,1 @@
+Requires `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` (or `VITE_SUPABASE_PUBLISHABLE_KEY` for SSR clients) to be set in a `.env` file at the project root; the legacy `src/supabaseClient.ts` hardcodes a production URL and anon key directly. Development runs via the standard Vite dev server; Tailwind scanning targets `./src/**/*.{js,ts,jsx,tsx}`.

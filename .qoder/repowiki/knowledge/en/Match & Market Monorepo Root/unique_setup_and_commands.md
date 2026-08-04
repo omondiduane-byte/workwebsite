@@ -1,0 +1,1 @@
+npm run dev starts the Vite dev server, npm run build runs tsc -b then vite build, npm run lint invokes ESLint over the whole tree, and npm run preview serves the built output locally.

@@ -1,0 +1,29 @@
+schema_version: 1
+module_path: ""
+title: Match & Market Monorepo Root
+scope:
+    - README.md
+    - SUPABASE.md
+    - .gitignore
+    - package.json
+    - package-lock.json
+    - components.json
+    - eslint.config.js
+    - index.html
+    - style.css
+    - skills-lock.json
+    - .env
+    - .env.example
+    - .temp_parse_app.cjs
+    - .temp_parse_app.js
+    - postcss.config.js
+    - supabase_schema.sql
+    - tailwind.config.cjs
+    - tmp_parse.js
+    - tsconfig.app.json
+    - tsconfig.json
+    - tsconfig.node.json
+    - vite.config.ts
+source_files: []
+depends_on: []
+related_to: []

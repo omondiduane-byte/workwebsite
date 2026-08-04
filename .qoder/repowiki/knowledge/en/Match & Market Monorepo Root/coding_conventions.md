@@ -1,0 +1,4 @@
+- All source imports use the @/* path alias resolving to ./src/* instead of relative paths.
+- TypeScript projects are split into references (tsconfig.app.json for app code, tsconfig.node.json for tooling) referenced from the root tsconfig.json.
+- Environment variables are sourced from .env (with .env.example as the contract) and consumed via import.meta.env or Supabase SSR helpers.
+- UI components follow shadcn patterns: class names composed with clsx and tailwind-merge, variants declared via class-variance-authority.

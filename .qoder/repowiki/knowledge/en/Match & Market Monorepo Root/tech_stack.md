@@ -1,0 +1,1 @@
+Vite 8 + React 19 + TypeScript 6 as the build/runtime core; Tailwind CSS 4 with PostCSS and class-variance-authority/tailwind-merge for component styling; shadcn/ui for primitive components; Supabase JS SDK (@supabase/supabase-js + @supabase/ssr) for auth/database; Framer Motion for animations; ESLint 10 with typescript-eslint for linting.

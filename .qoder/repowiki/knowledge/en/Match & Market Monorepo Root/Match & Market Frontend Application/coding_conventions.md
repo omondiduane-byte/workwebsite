@@ -1,0 +1,6 @@
+- Supabase table queries are mapped between camelCase TypeScript interfaces and snake_case database columns inline during `select`/`insert` operations inside `App.tsx`.
+- Each Supabase table follows a load-then-fallback pattern: query the table on mount, and if empty, insert baseline seed data before setting local state.
+- User session persistence uses `localStorage` under the `mm_current_user` key, with role resolution inferred from approval records via `resolveRoleFromAuth` helpers.
+- UI components under `components/ui/` expose variants through `cva` (class-variance-authority) and merge class names with the shared `cn()` utility from `lib/utils.ts`.
+- Error handling around async Supabase calls is normalized either by the generic `handle<T>` wrapper in `dbService.ts` returning `{ data, error }` or by throwing errors in service functions like `inquiryService.ts`.
+- Environment variables for Supabase are accessed via `import.meta.env.VITE_*` in browser code and `process.env.VITE_*` in the SSR client, with validation performed at module load time.

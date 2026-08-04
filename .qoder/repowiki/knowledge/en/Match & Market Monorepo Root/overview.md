@@ -1,0 +1,1 @@
+Root workspace for the Match & Market marketplace SPA, wiring Vite/React/TypeScript build, Tailwind + shadcn UI, Supabase client, and ESLint into a single dev/build pipeline.

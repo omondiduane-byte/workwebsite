@@ -1,0 +1,47 @@
+# 知识卡导出索引文件
+schema_version: 1
+locale: en-US
+branch: main
+nodes_managed: true
+exported_at: "2026-08-04T10:09:24Z"
+modules:
+    "":
+        dir_name: Match & Market Monorepo Root
+        title: Match & Market Monorepo Root
+        scope:
+            - README.md
+            - SUPABASE.md
+            - .gitignore
+            - package.json
+            - package-lock.json
+            - components.json
+            - eslint.config.js
+            - index.html
+            - style.css
+            - skills-lock.json
+            - .env
+            - .env.example
+            - .temp_parse_app.cjs
+            - .temp_parse_app.js
+            - postcss.config.js
+            - supabase_schema.sql
+            - tailwind.config.cjs
+            - tmp_parse.js
+            - tsconfig.app.json
+            - tsconfig.json
+            - tsconfig.node.json
+            - vite.config.ts
+        source_files: []
+        children:
+            - frontend_app
+        depends_on: []
+        related_to: []
+    frontend_app:
+        dir_name: Match & Market Frontend Application
+        title: Match & Market Frontend Application
+        scope:
+            - src/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []

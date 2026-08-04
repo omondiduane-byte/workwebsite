@@ -1,0 +1,1 @@
+React 18 with TypeScript, Vite build tool, Tailwind CSS + PostCSS, Supabase JS SDK (`@supabase/supabase-js`) for client-side DB/auth and `@supabase/ssr` for server-side cookie handling, `@base-ui/react` for accessible primitives, `class-variance-authority` + `clsx` + `tailwind-merge` for variant-based styling, `lucide-react` for icons, and `ogl` for WebGL shader rendering.
