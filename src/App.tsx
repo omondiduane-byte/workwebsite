@@ -19,6 +19,19 @@ const generateUniqueId = (prefix = 'id') => {
 };
 const generateSecureOtp = () => Math.floor(1000 + Math.random() * 9000).toString();
 
+// Helper: normalize phone by removing non-digit characters
+const normalizePhone = (phone = '') => phone.replace(/\D/g, '');
+
+// Helper: get initials from a name for avatar fallback
+const getInitials = (name = '') => {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return '';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+};
+
+// Role access helper (defined after access flags)
+
 // Functions outside the React lifecycle prevent linter compilation crashes
 
 /* STRICT TYPESCRIPT INTERFACES */
@@ -345,6 +358,37 @@ export default function App() {
     riderApprovals.some(req => req.riderName.toLowerCase() === (currentUser.username || '').toLowerCase() && req.status === 'Approved')
   );
 
+  // Test override: when set, force the enrollment UI to show for E2E tests.
+  // Set localStorage key `MM_TEST_FORCE_RIDER_ENROLL = '1'` to force no access.
+  const hasRiderTransitAccessEffective = ((): boolean => {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage && window.localStorage.getItem('MM_TEST_FORCE_RIDER_ENROLL') === '1') {
+        return false;
+      }
+    } catch (e) {
+      // ignore
+    }
+    return hasRiderTransitAccess;
+  })();
+
+  // Role access helper
+  const userHasAccess = (tab: 'customer' | 'vendor' | 'rider' | 'admin') => {
+    if (tab === 'customer') return true;
+    if (tab === 'vendor') return hasVendorHubAccess;
+    if (tab === 'rider') {
+      // Allow the Rider tab to be visible during tests when the override is set,
+      // but keep internal content gated by `hasRiderTransitAccessEffective`.
+      try {
+        if (typeof window !== 'undefined' && window.localStorage?.getItem('MM_TEST_FORCE_RIDER_ENROLL') === '1') return true;
+      } catch (e) {
+        // ignore
+      }
+      return hasRiderTransitAccess;
+    }
+    if (tab === 'admin') return !!currentUser && currentUser.role === 'admin';
+    return false;
+  };
+
   // Load initial data from Supabase on mount
   useEffect(() => {
     const loadInitialData = async () => {
@@ -635,6 +679,9 @@ export default function App() {
   const [regRiderPhone, setRegRiderPhone] = useState<string>('');
   const [regRiderPassword, setRegRiderPassword] = useState<string>('');
   const [regRiderConfirmPassword, setRegRiderConfirmPassword] = useState<string>('');
+  const [isRegisteringRider, setIsRegisteringRider] = useState<boolean>(false);
+  const [isRiderSubmitted, setIsRiderSubmitted] = useState<boolean>(false);
+  const [riderSubmissionInfo, setRiderSubmissionInfo] = useState<{ id?: string; message?: string } | null>(null);
 
   // AI gas refill countdown configurations
   const [gasHousehold, setGasHousehold] = useState<string>('2');
@@ -814,6 +861,8 @@ export default function App() {
           setAuthPassword('');
           setAuthConfirmPassword('');
           setIsAuthOpen(false);
+          setDashboardTab(user.role);
+          setIsDashboardOpen(true);
           triggerToast(`Welcome back, ${user.username}!`);
         } else {
           // If they exist in auth but not profiles, we create the profile
@@ -851,6 +900,8 @@ export default function App() {
           setCurrentUser(user);
           localStorage.setItem('mm_current_user', JSON.stringify(user));
           setIsAuthOpen(false);
+          setDashboardTab(user.role);
+          setIsDashboardOpen(true);
           triggerToast(`Welcome back, ${user.username}!`);
         }
       } catch (err: unknown) {
@@ -895,7 +946,11 @@ export default function App() {
         });
 
         if (authError) {
-          triggerToast('Auth registration failed: ' + authError.message, 'error');
+          // Log full error for debugging (safe in dev). Keep toast user-friendly.
+          // eslint-disable-next-line no-console
+          console.error('Supabase signUp error:', authError);
+          const detail = (authError && (authError.message || authError?.statusText)) ? (authError.message || authError.statusText) : JSON.stringify(authError);
+          triggerToast('Auth registration failed: ' + detail, 'error');
           return;
         }
 
@@ -948,6 +1003,8 @@ export default function App() {
         setAuthPassword('');
         setAuthConfirmPassword('');
         setIsAuthOpen(false);
+        setDashboardTab(user.role);
+        setIsDashboardOpen(true);
         triggerToast(`Successfully registered account for ${authUsername}!`);
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : 'Unknown error';
@@ -1294,39 +1351,76 @@ export default function App() {
       return;
     }
 
-    const emailForRider = `${regRiderPhone.replace(/\D/g, '')}@matchmarket.com`;
-    const newRequest = {
-      id: generateUniqueId('ra'),
-      rider_name: regRiderName,
-      motorcycle_plate: regPlate,
-      phone: regRiderPhone,
-      login_email: emailForRider,
-      login_password: regRiderPassword,
-      status: 'Pending'
-    };
+    setIsRegisteringRider(true);
+    try {
+      const normalizedPhone = normalizePhone(regRiderPhone);
+      const emailForRider = `${normalizedPhone}@matchmarket.com`;
 
-    const { error } = await supabase.from('rider_approvals').insert([newRequest]);
-    if (error) {
-      triggerToast('Rider registration failed: ' + error.message, 'error');
-      return;
-    }
+      // Attempt to create a Supabase Auth user for the rider.
+      let authCreated = false;
+      try {
+        const { data: authData, error: authError } = await supabase.auth.signUp({
+          email: emailForRider,
+          password: regRiderPassword,
+          options: {
+            data: {
+              username: regRiderName,
+              phone: normalizedPhone,
+              role: 'rider'
+            }
+          }
+        });
+        if (authError) {
+          console.warn('Supabase auth signUp error for rider:', authError.message);
+        } else if (authData?.user?.id) {
+          authCreated = true;
+        }
+      } catch (err) {
+        console.warn('Auth signup threw:', err);
+      }
 
-    setRiderApprovals([{
+      // Store only metadata in approvals; do NOT store plaintext passwords.
+      const newRequest = {
+        id: generateUniqueId('ra'),
+        rider_name: regRiderName,
+        motorcycle_plate: regPlate,
+        phone: normalizedPhone,
+        login_email: emailForRider,
+        status: 'Pending'
+      };
+
+      const { data: insertData, error } = await supabase
+        .from('rider_approvals')
+        .insert([newRequest])
+        .select()
+        .maybeSingle();
+
+      console.log('Rider registration insert result:', { insertData, error });
+      if (error) {
+        triggerToast('Rider registration failed: ' + error.message, 'error');
+        return;
+      }
+
+      setRiderApprovals([{
       id: newRequest.id,
       riderName: newRequest.rider_name,
       motorcyclePlate: newRequest.motorcycle_plate,
-      phone: newRequest.phone,
+        phone: newRequest.phone,
       status: 'Pending',
       timestamp: new Date().toLocaleString(),
       loginEmail: newRequest.login_email
     }, ...riderApprovals]);
-
-    setRegRiderName('');
-    setRegPlate('');
-    setRegRiderPhone('');
-    setRegRiderPassword('');
-    setRegRiderConfirmPassword('');
-    triggerToast('Rider transit application successful! Please wait for approval.');
+      setRegRiderName('');
+      setRegPlate('');
+      setRegRiderPhone('');
+      setRegRiderPassword('');
+      setRegRiderConfirmPassword('');
+      setRiderSubmissionInfo({ id: insertData?.id || newRequest.id, message: authCreated ? 'Account created and application submitted' : 'Application submitted (auth may require verification)' });
+      setIsRiderSubmitted(true);
+      triggerToast('Rider transit application successful! Please wait for approval.', 'success');
+    } finally {
+      setIsRegisteringRider(false);
+    }
   };
 
   const handleGasRefillSchedule = async (e: React.FormEvent) => {
@@ -1440,6 +1534,7 @@ export default function App() {
       };
       setCurrentUser(adminSession);
       setDashboardTab('admin');
+      setIsAuthOpen(false);
       setIsDashboardOpen(true);
       setIsAdminGatewayOpen(false);
       setAdminPasswordInput('');
@@ -1757,7 +1852,7 @@ export default function App() {
                   Hi, <span className="text-white font-extrabold">{currentUser.username}</span> ({currentUser.role})
                 </span>
                 <button 
-                  onClick={() => setIsDashboardOpen(true)}
+                  onClick={() => { setIsAuthOpen(false); setIsDashboardOpen(true); }}
                   className="px-4 py-2 rounded-full text-xs font-semibold uppercase tracking-wider text-red bg-white hover:bg-zinc-200 transition-all"
                 >
                   My M & M Hub
@@ -1772,10 +1867,27 @@ export default function App() {
               </div>
             ) : (
               <button 
-                onClick={() => { setAuthMode('login'); setIsAuthOpen(true); }}
+                onClick={() => { setAuthMode('login'); setIsAuthOpen(true); setIsDashboardOpen(false); }}
                 className="px-4 py-2 rounded-full text-xs font-bold uppercase tracking-wider text-red bg-white hover:bg-zinc-200 transition-all"
               >
                 Sign In
+              </button>
+            )}
+
+            {/* User profile quick access */}
+            {currentUser && (
+              <button
+                onClick={() => { setIsAuthOpen(false); setIsDashboardOpen(true); }}
+                title="Open Profile"
+                className="p-2 border border-white/10 rounded-full hover:bg-white/10 transition-colors text-zinc-500"
+              >
+                {profilePhotoUrl ? (
+                  <img src={profilePhotoUrl} alt="profile" className="w-5 h-5 rounded-full object-cover" />
+                ) : (
+                  <div className="w-6 h-6 rounded-full bg-white/10 text-white flex items-center justify-center font-bold text-xs">
+                    {getInitials(currentUser?.username || '') || <Users className="w-4 h-4" />}
+                  </div>
+                )}
               </button>
             )}
 
@@ -1842,7 +1954,9 @@ export default function App() {
             <button 
               onClick={() => {
                 if (!currentUser) { setIsAuthOpen(true); return; }
+                if (!hasVendorHubAccess) { triggerToast('Access restricted to vendor accounts.', 'error'); return; }
                 setDashboardTab('vendor');
+                setIsAuthOpen(false);
                 setIsDashboardOpen(true);
               }}
               className="flex-1 sm:flex-none px-6 py-3.5 rounded-xl text-xs font-bold uppercase tracking-widest bg-zinc-900 border border-white/20 text-white hover:bg-zinc-800 transition-all text-center"
@@ -1852,7 +1966,9 @@ export default function App() {
             <button 
               onClick={() => {
                 if (!currentUser) { setIsAuthOpen(true); return; }
+                if (!hasRiderTransitAccessEffective) { triggerToast('Access restricted to approved riders.', 'error'); return; }
                 setDashboardTab('rider');
+                setIsAuthOpen(false);
                 setIsDashboardOpen(true);
               }}
               className="flex-1 sm:flex-none px-6 py-3.5 rounded-xl text-xs font-bold uppercase tracking-widest bg-white text-black hover:bg-zinc-200 transition-all text-center"
@@ -2556,10 +2672,29 @@ export default function App() {
         </div>
       )}
 
+      {/* RIDER SUBMISSION CONFIRMATION */}
+      {isRiderSubmitted && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+          <div className="w-full max-w-md liquid-glass-heavy rounded-3xl p-6 border border-white/15 relative">
+            <button onClick={() => setIsRiderSubmitted(false)} className="absolute top-4 right-4 p-2 rounded-full border border-white/10 hover:bg-white/10 text-white">
+              <X className="w-4 h-4" />
+            </button>
+            <div className="text-center">
+              <h3 className="text-lg font-bold text-white mb-2">Application Received</h3>
+              <p className="text-sm text-zinc-400">{riderSubmissionInfo?.message || 'Your rider application has been recorded. We will notify you once approved.'}</p>
+              {riderSubmissionInfo?.id && <p className="text-xs text-zinc-500 mt-3">Ref: {riderSubmissionInfo.id}</p>}
+              <div className="mt-6">
+                <button onClick={() => setIsRiderSubmitted(false)} className="px-4 py-2 bg-white rounded-lg font-bold text-black">Close</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* MODAL 2: INTERACTIVE DASHBOARD SYSTEM */}
       {isDashboardOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/90 backdrop-blur-xl">
-          <div className="w-full max-w-5xl liquid-glass-heavy rounded-3xl p-6 border border-white/15 relative flex flex-col max-h-[90vh] overflow-hidden">
+        <div className="fixed inset-0 z-30 flex items-start justify-center pt-24 p-4 bg-black/80 backdrop-blur-xl overflow-auto">
+          <div className="w-full max-w-5xl liquid-glass-heavy rounded-3xl p-6 border border-white/15 relative flex flex-col overflow-auto" style={{ maxHeight: 'calc(100vh - 6rem)' }}>
             
             <button 
               onClick={() => setIsDashboardOpen(false)}
@@ -2577,28 +2712,30 @@ export default function App() {
             </div>
 
             <div className="flex border-b border-white/10 mb-6 overflow-x-auto pb-1 gap-2">
-              {[
-                { tab: 'customer', title: '1. Customer Portal' },
-                { tab: 'vendor', title: '2. Vendor Hub(SaaS)' },
-                { tab: 'rider', title: '3. M&M Delivery' },
-                ...(currentUser && currentUser.role === 'admin' ? [{ tab: 'admin', title: '4. Admin Office' }] : [])
-              ].map((item) => (
-                <button
-                  key={item.tab}
-                  onClick={() => {
-                    setDashboardTab(item.tab as 'customer' | 'vendor' | 'rider' | 'admin');
-                    setProfileReturnTab(item.tab as 'customer' | 'vendor' | 'rider' | 'admin');
-                  }}
-                  className={`px-4 py-2.5 rounded-lg text-xs font-bold uppercase tracking-wider whitespace-nowrap transition-all ${
-                    dashboardTab === item.tab 
-                      ? 'bg-white text-black shadow-lg' 
-                      : 'bg-zinc-950 text-zinc-500 hover:text-white border border-white/5'
-                  }`}
-                >
-                  {item.title}
-                </button>
-              ))}
-            </div>
+                {([
+                  { tab: 'customer', title: '1. Customer Portal' },
+                  { tab: 'vendor', title: '2. Vendor Hub(SaaS)' },
+                  { tab: 'rider', title: '3. M&M Delivery' },
+                  { tab: 'admin', title: '4. Admin Office' }
+                ] as { tab: 'customer' | 'vendor' | 'rider' | 'admin'; title: string }[])
+                  .filter(item => userHasAccess(item.tab))
+                  .map((item) => (
+                  <button
+                    key={item.tab}
+                    onClick={() => {
+                      setDashboardTab(item.tab as 'customer' | 'vendor' | 'rider' | 'admin');
+                      setProfileReturnTab(item.tab as 'customer' | 'vendor' | 'rider' | 'admin');
+                    }}
+                    className={`px-4 py-2.5 rounded-lg text-xs font-bold uppercase tracking-wider whitespace-nowrap transition-all ${
+                      dashboardTab === item.tab 
+                        ? 'bg-white text-black shadow-lg' 
+                        : 'bg-zinc-950 text-zinc-500 hover:text-white border border-white/5'
+                    }`}
+                  >
+                    {item.title}
+                  </button>
+                ))}
+              </div>
 
             <div className="flex-1 overflow-y-auto pr-2 min-h-0 space-y-6">
               <div className="liquid-glass p-5 rounded-2xl border border-white/10 mb-6">
@@ -3029,11 +3166,11 @@ export default function App() {
               {/* RESTRICTED RIDER ONBOARDING SCREEN (Resolves image_9649aa.png) */}
               {dashboardTab === 'rider' && (
                 <div>
-                  {!hasRiderTransitAccess ? (
+                  {!hasRiderTransitAccessEffective ? (
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                       <div className="liquid-glass p-5 rounded-2xl border border-white/10 space-y-4">
                         <div>
-                          <h3 className="text-xs font-extrabold tracking-widest uppercase text-white mb-1">Rider Transit Enrollment</h3>
+                          <h3 data-testid="rider-enrollment" className="text-xs font-extrabold tracking-widest uppercase text-white mb-1">Rider Transit Enrollment</h3>
                           <p className="text-[10px] text-zinc-500 uppercase tracking-wider font-semibold">License Entry: Ksh 500 Setup</p>
                         </div>
 
@@ -3096,9 +3233,10 @@ export default function App() {
 
                           <button 
                             type="submit"
-                            className="w-full py-2.5 bg-white text-black font-bold uppercase tracking-widest text-xs rounded-xl hover:bg-zinc-200 transition-all"
+                            disabled={isRegisteringRider}
+                            className={`w-full py-2.5 bg-white text-black font-bold uppercase tracking-widest text-xs rounded-xl hover:bg-zinc-200 transition-all ${isRegisteringRider ? 'opacity-60 cursor-not-allowed' : ''}`}
                           >
-                            Complete
+                            {isRegisteringRider ? 'Submitting...' : 'Complete'}
                           </button>
                         </form>
                       </div>

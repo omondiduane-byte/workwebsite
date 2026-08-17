@@ -133,6 +133,8 @@ CREATE TABLE IF NOT EXISTS public.rider_approvals (
   motorcycle_plate TEXT NOT NULL,
   phone TEXT NOT NULL,
   login_email TEXT,
+  -- NOTE: Storing plaintext passwords is insecure. We recommend NOT storing `login_password` here.
+  -- Instead, create a Supabase Auth user upon approval and keep only metadata in this table.
   login_password TEXT,
   status TEXT DEFAULT 'Pending',
   created_at TIMESTAMPTZ DEFAULT NOW()

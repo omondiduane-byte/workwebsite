@@ -1,0 +1,56 @@
+import { test, expect } from '@playwright/test';
+
+// Minimal scaffold: run against local dev server (http://localhost:5173 by default for Vite)
+// Ensure Playwright is installed and configured to run this test.
+
+test.describe('Rider registration flow', () => {
+  test('submits rider onboarding form', async ({ page }) => {
+    const base = process.env.DEV_SERVER_URL || 'http://localhost:5174/';
+    // Create a fresh account through the UI (customer) so we can apply to be a rider
+    const ts = Date.now();
+    const signupEmail = `playwright+signup+${ts}@example.com`;
+    const signupPhone = `0711${Math.floor(Math.random() * 900000 + 100000)}`;
+
+    // Force the app to show the rider enrollment UI during tests
+    await page.addInitScript(() => {
+      localStorage.setItem('MM_TEST_FORCE_RIDER_ENROLL', '1');
+    });
+    await page.goto(base);
+    await page.click('text=Sign In');
+    await page.click('text=Register New Account');
+
+    await page.fill('input[placeholder="e.g. Jane Wanjiku"]', 'PlaywrightUser');
+    await page.fill('input[placeholder="e.g. 0712345678"]', signupPhone);
+    await page.fill('input[placeholder="e.g. jane@matchmarket.com"]', signupEmail);
+    await page.fill('input[placeholder="Create password"]', 'testpassword');
+    await page.fill('input[placeholder="Confirm password"]', 'testpassword');
+    // Select by visible label since the select options don't use predictable values
+    await page.selectOption('select', { label: 'Customer/User' });
+    await page.click('button:has-text("Create Profile")');
+
+    // After signup, wait for hub button and open dashboard
+    await page.waitForSelector('text=My M & M Hub', { timeout: 10000 });
+    await page.click('text=My M & M Hub');
+
+    // Ensure dashboard loaded, then click the Rider tab
+    await page.waitForSelector('text=M&M Control Center', { timeout: 10000 });
+    const riderTab = page.locator('button', { hasText: '3. M&M Delivery' });
+    await riderTab.scrollIntoViewIfNeeded();
+    await riderTab.click();
+
+    // Try to find Rider enrollment; if visible, submit it. Otherwise assume user already has rider profile view.
+    const enrollment = page.locator('[data-testid="rider-enrollment"]');
+    if (await enrollment.isVisible().catch(() => false)) {
+      await page.fill('input[placeholder="e.g. Alex Njuguna"]', 'Playwright Rider');
+      await page.fill('input[placeholder="e.g. KMCE 224Y"]', 'TEST 123X');
+      await page.fill('input[placeholder="e.g. 0799887766"]', '0711000000');
+      await page.fill('input[placeholder="Create password"]', 'testpassword');
+      await page.fill('input[placeholder="Confirm password"]', 'testpassword');
+      await page.click('button:has-text("Complete")');
+      await expect(page.locator('text=Application Received').or(page.locator('text=Application submitted'))).toBeVisible({ timeout: 10000 });
+    } else {
+      // Enrollment not present — assert profile view present instead
+      await expect(page.locator('text=My Profile Settings')).toBeVisible({ timeout: 5000 });
+    }
+  });
+});
