@@ -1,11 +1,12 @@
-import React, { useState, useMemo, useEffect, } from 'react';
+import React, { useState, useMemo, useEffect, useRef, } from 'react';
 import { supabase } from './supabase/supabaseClient';
 import { 
   Search, Smartphone, ArrowRight, 
   HelpCircle, ShoppingCart, 
   Layers, Shield, X, AlertCircle,
   Lock, Plus, Minus, Trash2, CheckCircle2, Sparkles,
-  LogOut, Users, Flame, ShieldAlert
+  LogOut, LogIn, Users, Flame, ShieldAlert, Bell, ShoppingBag,
+  Bike, Trophy, MapPin
 } from 'lucide-react';
 // Example usage in a component
 // import { inquiryService } from './services/inquiryService'; // unused - commented out to fix lint error
@@ -103,6 +104,7 @@ interface DeliveryApprovalRequest {
   phone: string;
   status: 'Pending' | 'Approved' | 'Declined';
   timestamp: string;
+  approvedAt?: string;
   loginEmail?: string;
   loginPassword?: string;
 }
@@ -119,7 +121,32 @@ interface DeliveryJob {
   itemsSummary: string;
   otp: string; // Anti-Liar Payment Handshake System
   bodaPoolActive?: boolean;
+  deliveredAt?: string;
 }
+
+interface PayoutRequest {
+  id: string;
+  riderName: string;
+  phone: string;
+  amount: number;
+  status: 'Pending' | 'Paid' | 'Rejected';
+  createdAt: string;
+}
+
+const mapDeliveryJobRow = (j: Record<string, any>): DeliveryJob => ({
+  id: j.id,
+  orderId: j.order_id,
+  destination: j.destination,
+  fee: Number(j.fee),
+  status: j.status as 'Available' | 'Assigned' | 'Picked Up' | 'Delivered',
+  riderName: j.rider_name || undefined,
+  customerPhone: j.customer_phone,
+  merchantName: j.merchant_name,
+  itemsSummary: j.items_summary || '',
+  otp: j.otp,
+  bodaPoolActive: !!j.boda_pool_active,
+  deliveredAt: j.delivered_at || undefined
+});
 
 interface EscrowTransaction {
   id: string;
@@ -242,7 +269,7 @@ export default function App() {
     return saved ? JSON.parse(saved) : null;
   });
   const [isAuthOpen, setIsAuthOpen] = useState<boolean>(false);
-  const [authMode, setAuthMode] = useState<'login' | 'signup' | 'forgot'>('login');
+  const [authMode, setAuthMode] = useState<'login' | 'signup' | 'forgot' | 'vendor_register' | 'rider_register'>('login');
   const [authUsername, setAuthUsername] = useState<string>(currentUser?.username || '');
   const [authEmail, setAuthEmail] = useState<string>(currentUser?.email || '');
   const [authPhone, setAuthPhone] = useState<string>(currentUser?.phone || '');
@@ -264,6 +291,15 @@ export default function App() {
   const [bodaPoolOption, setBodaPoolOption] = useState<boolean>(false);
   const [bodaPoolWindow, setBodaPoolWindow] = useState<number | null>(null);
   const [enteredOtp, setEnteredOtp] = useState<{ [jobId: string]: string }>({});
+  const [riderOnline, setRiderOnline] = useState<boolean>(() => (localStorage.getItem('mm_rider_online') ?? 'true') === 'true');
+  const [riderJobFilter, setRiderJobFilter] = useState<'available' | 'active' | 'completed'>('available');
+  const [payoutRequests, setPayoutRequests] = useState<PayoutRequest[]>([]);
+  const [payoutAmount, setPayoutAmount] = useState<string>('');
+  const [expandedReceiptId, setExpandedReceiptId] = useState<string | null>(null);
+  const [zoneFees, setZoneFees] = useState<{ id: string; zone: string; fee: number }[]>([]);
+  const [zoneForm, setZoneForm] = useState<{ zone: string; fee: string }>({ zone: '', fee: '' });
+  const [offlineQueueIds, setOfflineQueueIds] = useState<string[]>([]);
+  const riderOnlineRef = useRef(riderOnline);
   const [cookieConsent, setCookieConsent] = useState<string | null>(() => {
     return localStorage.getItem('mm_cookie_consent');
   });
@@ -271,6 +307,7 @@ export default function App() {
 
   // Security gate states (Admin hidden decryption access)
   const [isAdminGatewayOpen, setIsAdminGatewayOpen] = useState<boolean>(false);
+  const [isNotificationsOpen, setIsNotificationsOpen] = useState<boolean>(false);
   const [adminPasswordInput, setAdminPasswordInput] = useState<string>('');
 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -294,6 +331,25 @@ export default function App() {
     setProfileDeliveryPoint(user.deliveryPoint || '');
     setProfileBio(user.bio || '');
     setProfilePickupNote(user.pickupNote || '');
+  };
+
+  const handleProfilePictureFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!['image/jpeg', 'image/png'].includes(file.type)) {
+      triggerToast('Only JPEG or PNG images are allowed.', 'error');
+      e.target.value = '';
+      return;
+    }
+    if (file.size > 1.5 * 1024 * 1024) {
+      triggerToast('Image too large. Please choose a file under 1.5 MB.', 'error');
+      e.target.value = '';
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => setProfilePhotoUrl(String(reader.result || ''));
+    reader.readAsDataURL(file);
+    e.target.value = '';
   };
 
   const triggerToast = (msg: string, type: 'success' | 'error' | 'info' = 'success') => {
@@ -492,6 +548,7 @@ export default function App() {
             phone: item.phone,
             status: item.status as 'Pending' | 'Approved' | 'Declined',
             timestamp: new Date(item.created_at).toLocaleString(),
+            approvedAt: item.approved_at ? new Date(item.approved_at).toLocaleString() : undefined,
             loginEmail: item.login_email || undefined,
             loginPassword: item.login_password || undefined
           })));
@@ -511,7 +568,8 @@ export default function App() {
             merchantName: j.merchant_name,
             itemsSummary: j.items_summary || '',
             otp: j.otp,
-            bodaPoolActive: !!j.boda_pool_active
+            bodaPoolActive: !!j.boda_pool_active,
+            deliveredAt: j.delivered_at || undefined
           })));
         } else if (!dbDeliveryFleet || dbDeliveryFleet.length === 0) {
           const defaultJob = {
@@ -539,6 +597,37 @@ export default function App() {
             otp: defaultJob.otp,
             bodaPoolActive: defaultJob.boda_pool_active
           }]);
+        }
+
+        // Load rider payout requests (table appears after the schema update is run)
+        try {
+          const { data: dbPayouts } = await supabase.from('payout_requests').select('*').order('created_at', { ascending: false });
+          if (dbPayouts && dbPayouts.length > 0) {
+            setPayoutRequests(dbPayouts.map((p: Record<string, any>) => ({
+              id: p.id,
+              riderName: p.rider_name,
+              phone: p.phone || '',
+              amount: Number(p.amount),
+              status: (p.status || 'Pending') as 'Pending' | 'Paid' | 'Rejected',
+              createdAt: p.created_at ? new Date(p.created_at).toLocaleString() : ''
+            })));
+          }
+        } catch (payoutErr) {
+          console.warn('payout_requests table not ready yet:', payoutErr);
+        }
+
+        // Load route zone fee suggestions (table appears after the schema update is run)
+        try {
+          const { data: dbZones } = await supabase.from('zone_fees').select('*');
+          if (dbZones && dbZones.length > 0) {
+            setZoneFees(dbZones.map((z: Record<string, any>) => ({
+              id: z.id,
+              zone: String(z.zone || ''),
+              fee: Number(z.fee)
+            })));
+          }
+        } catch (zoneErr) {
+          console.warn('zone_fees table not ready yet:', zoneErr);
         }
 
         // Load escrow transactions
@@ -645,6 +734,51 @@ export default function App() {
     loadInitialData();
   }, []);
 
+  // Load persisted notifications for the signed-in user (order releases, support replies)
+  useEffect(() => {
+    const loadUserNotifications = async () => {
+      if (!currentUser || currentUser.role === 'admin') return;
+      const orParts = [`user_id.eq.${currentUser.id}`];
+      if (currentUser.phone) orParts.push(`phone.eq.${currentUser.phone}`);
+      if (currentUser.username) orParts.push(`target_name.eq.${currentUser.username}`);
+      if (currentUser.linkedEntityName) orParts.push(`target_name.eq.${currentUser.linkedEntityName}`);
+
+      const { data, error } = await supabase
+        .from('notifications')
+        .select('*')
+        .or(orParts.join(','))
+        .order('created_at', { ascending: false })
+        .limit(50);
+
+      if (error || !data) return;
+
+      const incoming: Notification[] = data
+        .filter((n) =>
+          n.user_id === currentUser.id ||
+          (currentUser.phone && n.phone === currentUser.phone) ||
+          (currentUser.username && n.target_name === currentUser.username) ||
+          (currentUser.linkedEntityName && n.target_name === currentUser.linkedEntityName)
+        )
+        .map((n) => ({
+          id: n.id,
+          userId: currentUser.id,
+          content: n.content,
+          createdAt: new Date(n.created_at).toLocaleString(),
+          read: !!n.read,
+          type: 'system' as const
+        }));
+
+      if (incoming.length > 0) {
+        setNotifications((prev) => {
+          const existingIds = new Set(prev.map((p) => p.id));
+          return [...incoming.filter((i) => !existingIds.has(i.id)), ...prev];
+        });
+      }
+    };
+    loadUserNotifications();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id]);
+
   // Checkout forms binding
   const [deliveryPlace, setDeliveryPlace] = useState<string>('');
   const [customerPhone, setCustomerPhone] = useState<string>('');
@@ -732,10 +866,90 @@ export default function App() {
     setCart(cart.filter(entry => entry.item.id !== itemId));
   };
 
+  const completeRoleLogin = (user: AuthUser, tab: 'vendor' | 'rider', welcome: string) => {
+    setCurrentUser(user);
+    syncUserFields(user);
+    localStorage.setItem('mm_current_user', JSON.stringify(user));
+    setAuthPassword('');
+    setAuthConfirmPassword('');
+    setIsAuthOpen(false);
+    setDashboardTab(tab);
+    setIsDashboardOpen(true);
+    triggerToast(welcome, 'success');
+  };
+
+  const handleVendorLogin = async () => {
+    const phone = normalizePhone(authPhone);
+    if (!phone || !authPassword) {
+      triggerToast('Enter your mobile contact and password to sign in as a merchant.', 'error');
+      return;
+    }
+    const { data, error } = await supabase.from('vendor_approvals').select('*');
+    if (error) {
+      triggerToast('Merchant lookup failed: ' + error.message, 'error');
+      return;
+    }
+    const record = (data || []).find((r) => normalizePhone(String(r.phone || '')) === phone);
+    if (!record) {
+      triggerToast('No merchant application found for this phone number. Please register first.', 'error');
+      return;
+    }
+    if (String(record.status || '').toLowerCase() !== 'approved') {
+      triggerToast('Submitted successfully, Waiting for approval which can take a maximum of 3days', 'info');
+      return;
+    }
+    if (record.login_password && record.login_password !== authPassword) {
+      triggerToast('Incorrect merchant password.', 'error');
+      return;
+    }
+    completeRoleLogin({
+      id: record.id,
+      username: record.shop_name,
+      phone: record.phone,
+      email: record.login_email || undefined,
+      role: 'vendor',
+      linkedEntityName: record.shop_name
+    }, 'vendor', `Welcome back, ${record.shop_name}!`);
+  };
+
+  const handleRiderLogin = async () => {
+    const phone = normalizePhone(authPhone);
+    if (!phone || !authPassword) {
+      triggerToast('Enter your mobile contact and password to sign in as a rider.', 'error');
+      return;
+    }
+    const { data, error } = await supabase.from('rider_approvals').select('*');
+    if (error) {
+      triggerToast('Rider lookup failed: ' + error.message, 'error');
+      return;
+    }
+    const record = (data || []).find((r) => normalizePhone(String(r.phone || '')) === phone);
+    if (!record) {
+      triggerToast('No rider application found for this phone number. Please register first.', 'error');
+      return;
+    }
+    if (String(record.status || '').toLowerCase() !== 'approved') {
+      triggerToast('Submitted successfully, Waiting for approval which can take a maximum of 3days', 'info');
+      return;
+    }
+    if (record.login_password && record.login_password !== authPassword) {
+      triggerToast('Incorrect rider password.', 'error');
+      return;
+    }
+    completeRoleLogin({
+      id: record.id,
+      username: record.rider_name,
+      phone: record.phone,
+      email: record.login_email || undefined,
+      role: 'rider'
+    }, 'rider', `Welcome back, ${record.rider_name}!`);
+  };
+
   const handleAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     console.log("Form submission started");
-    if (!authUsername || (!authEmail && !authPhone)) {
+    const isRoleTableLogin = authMode === 'login' && (authRole === 'vendor' || authRole === 'rider');
+    if ((!authUsername && !isRoleTableLogin) || (!authEmail && !authPhone)) {
       triggerToast('Complete username and either email or telephone number!', 'error');
       return;
     }
@@ -766,6 +980,39 @@ export default function App() {
     }
 
     if (authMode === 'login') {
+      // Dedicated platform admin sign-in: admins authenticate through the normal
+      // login form (username "admin" + default contact 0797300631 + admin password)
+      // so admin tooling stays separated from customer/vendor/rider accounts.
+      if (authUsername.trim().toLowerCase() === 'admin' && normalizePhone(authPhone) === '0797300631' && authPassword === 'admin254') {
+        const adminSession: AuthUser = {
+          id: 'admin_root',
+          username: 'Platform Admins',
+          phone: '0797300631',
+          role: 'admin'
+        };
+        setCurrentUser(adminSession);
+        syncUserFields(adminSession);
+        localStorage.setItem('mm_current_user', JSON.stringify(adminSession));
+        setAuthPassword('');
+        setAuthConfirmPassword('');
+        setIsAuthOpen(false);
+        setDashboardTab('admin');
+        setIsDashboardOpen(true);
+        triggerToast('Platform Control Decrypted! Welcome, Admin.', 'success');
+        return;
+      }
+
+      // Role-specified sign-in: vendors and riders authenticate against their
+      // approval tables on Supabase and are routed to their own dashboards.
+      if (authRole === 'vendor') {
+        await handleVendorLogin();
+        return;
+      }
+      if (authRole === 'rider') {
+        await handleRiderLogin();
+        return;
+      }
+
       console.log("Attempting Supabase Auth login...");
       try {
         const cleanPhone = authPhone.trim().replace(/\s+/g, '');
@@ -909,6 +1156,14 @@ export default function App() {
         triggerToast('Auth connection error: ' + message, 'error');
       }
     } else if (authMode === 'signup') {
+      if (authRole === 'vendor') {
+        setAuthMode('vendor_register');
+        return;
+      }
+      if (authRole === 'rider') {
+        setAuthMode('rider_register');
+        return;
+      }
       console.log("Attempting Supabase Auth registration...");
       try {
         let assignedRole = resolveRoleFromApprovals(authPhone, authRole);
@@ -949,7 +1204,8 @@ export default function App() {
           // Log full error for debugging (safe in dev). Keep toast user-friendly.
           // eslint-disable-next-line no-console
           console.error('Supabase signUp error:', authError);
-          const detail = (authError && (authError.message || authError?.statusText)) ? (authError.message || authError.statusText) : JSON.stringify(authError);
+          const authErrorExt = authError as unknown as { statusText?: string; status?: number };
+          const detail = (authError.message || authErrorExt.statusText || authErrorExt.status) ? (authError.message || authErrorExt.statusText || authErrorExt.status) : JSON.stringify(authError);
           triggerToast('Auth registration failed: ' + detail, 'error');
           return;
         }
@@ -1333,7 +1589,8 @@ export default function App() {
     setRegPhone('');
     setRegShopPassword('');
     setRegShopConfirmPassword('');
-    triggerToast('Store network application successful! Please wait for approval.');
+    triggerToast('Submitted successfully, Waiting for approval which can take a maximum of 3days', 'info');
+    setAuthMode('login');
   };
 
   const handleRiderRegisterSubmit = async (e: React.FormEvent) => {
@@ -1379,13 +1636,15 @@ export default function App() {
         console.warn('Auth signup threw:', err);
       }
 
-      // Store only metadata in approvals; do NOT store plaintext passwords.
+      // Store rider login credentials so they can sign in after approval
+      // (mirrors vendor_approvals which already stores login_password).
       const newRequest = {
         id: generateUniqueId('ra'),
         rider_name: regRiderName,
         motorcycle_plate: regPlate,
         phone: normalizedPhone,
         login_email: emailForRider,
+        login_password: regRiderPassword,
         status: 'Pending'
       };
 
@@ -1417,7 +1676,8 @@ export default function App() {
       setRegRiderConfirmPassword('');
       setRiderSubmissionInfo({ id: insertData?.id || newRequest.id, message: authCreated ? 'Account created and application submitted' : 'Application submitted (auth may require verification)' });
       setIsRiderSubmitted(true);
-      triggerToast('Rider transit application successful! Please wait for approval.', 'success');
+      triggerToast('Submitted successfully, Waiting for approval which can take a maximum of 3days', 'info');
+      setAuthMode('login');
     } finally {
       setIsRegisteringRider(false);
     }
@@ -1503,6 +1763,49 @@ export default function App() {
     }
   };
 
+  const [declinedChamaDeals, setDeclinedChamaDeals] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('mm_declined_chama');
+      return saved ? (JSON.parse(saved) as string[]) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const declineChamaDeal = (dealId: string) => {
+    setDeclinedChamaDeals((prev) => {
+      const next = prev.includes(dealId) ? prev : [...prev, dealId];
+      localStorage.setItem('mm_declined_chama', JSON.stringify(next));
+      return next;
+    });
+    triggerToast('Pool declined. It will no longer prompt you to join.', 'info');
+  };
+
+  const exitChamaDealPool = async (dealId: string) => {
+    if (!currentUser) {
+      triggerToast('Sign in to manage your pool memberships.', 'info');
+      return;
+    }
+    const deal = chamaDeals.find((d) => d.id === dealId);
+    if (!deal || !deal.backers.includes(currentUser.phone)) return;
+
+    const updatedBackers = deal.backers.filter((p) => p !== currentUser.phone);
+    const updatedFilled = Math.max(0, deal.filledPortions - 1);
+
+    const { error } = await supabase
+      .from('chama_deals')
+      .update({ backers: updatedBackers, filled_portions: updatedFilled })
+      .eq('id', dealId);
+
+    if (error) {
+      triggerToast('Failed to exit pool: ' + error.message, 'error');
+      return;
+    }
+
+    setChamaDeals(chamaDeals.map((d) => d.id === dealId ? { ...d, backers: updatedBackers, filledPortions: updatedFilled } : d));
+    triggerToast(`You have exited the pool for ${deal.title}.`, 'info');
+  };
+
   const purchaseAdBanner = async (itemId: string) => {
     const { error } = await supabase
       .from('menu_items')
@@ -1533,6 +1836,7 @@ export default function App() {
         role: 'admin'
       };
       setCurrentUser(adminSession);
+      syncUserFields(adminSession);
       setDashboardTab('admin');
       setIsAuthOpen(false);
       setIsDashboardOpen(true);
@@ -1594,7 +1898,7 @@ export default function App() {
   const approveRiderRequest = async (req: DeliveryApprovalRequest) => {
     const { error } = await supabase
       .from('rider_approvals')
-      .update({ status: 'Approved' })
+      .update({ status: 'Approved', approved_at: new Date().toISOString() })
       .eq('id', req.id);
 
     if (error) {
@@ -1602,14 +1906,14 @@ export default function App() {
       return;
     }
 
-    setRiderApprovals(riderApprovals.map(r => r.id === req.id ? { ...r, status: 'Approved' } : r));
+    setRiderApprovals(riderApprovals.map(r => r.id === req.id ? { ...r, status: 'Approved', approvedAt: new Date().toLocaleString() } : r));
     triggerToast(`Granted dispatch clearance to rider: ${req.riderName}!`, 'success');
   };
 
   const releaseEscrowForAdmin = async (orderId: string) => {
     const { error: jobErr } = await supabase
       .from('delivery_jobs')
-      .update({ status: 'Delivered' })
+      .update({ status: 'Delivered', delivered_at: new Date().toISOString() })
       .eq('order_id', orderId);
 
     const { error: txErr } = await supabase
@@ -1624,6 +1928,7 @@ export default function App() {
 
     setDeliveryFleet(deliveryFleet.map(job => job.orderId === orderId ? { ...job, status: 'Delivered' } : job));
     setEscrowLedger(escrowLedger.map(tx => tx.orderId === orderId ? { ...tx, status: 'Released' } : tx));
+    broadcastOrderReleaseNotifications(orderId);
     triggerToast('Escrow order released successfully.', 'success');
   };
 
@@ -1687,6 +1992,10 @@ export default function App() {
   };
 
   const claimDeliveryJob = async (jobId: string, riderName: string) => {
+    if (currentUser?.role === 'rider' && !riderOnline) {
+      triggerToast('You are offline. Switch online to claim jobs.', 'error');
+      return;
+    }
     const { error } = await supabase
       .from('delivery_jobs')
       .update({ status: 'Assigned', rider_name: riderName })
@@ -1724,7 +2033,7 @@ export default function App() {
     if (entered === job.otp) {
       const { error: jobErr } = await supabase
         .from('delivery_jobs')
-        .update({ status: 'Delivered' })
+        .update({ status: 'Delivered', delivered_at: new Date().toISOString() })
         .eq('id', jobId);
 
       const { error: txErr } = await supabase
@@ -1739,9 +2048,302 @@ export default function App() {
 
       setDeliveryFleet(deliveryFleet.map(j => j.id === jobId ? { ...j, status: 'Delivered' } : j));
       setEscrowLedger(escrowLedger.map(tx => tx.orderId === orderId ? { ...tx, status: 'Released' } : tx));
+      broadcastOrderReleaseNotifications(orderId);
       triggerToast('Security OTP Matches! Payment Successfully sent to vendor.', 'success');
     } else {
       triggerToast('Verification code mismatch! Funds remain locked for further review.', 'error');
+    }
+  };
+
+  // Rider earnings computed from delivered jobs assigned to the signed-in rider.
+  const riderEarnings = useMemo(() => {
+    if (!currentUser || currentUser.role !== 'rider') {
+      return { today: 0, week: 0, total: 0, jobs: [] as DeliveryJob[] };
+    }
+    const mine = deliveryFleet.filter(j => j.status === 'Delivered' && j.riderName === currentUser.username);
+    const now = new Date();
+    const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const weekAgo = now.getTime() - 7 * 24 * 60 * 60 * 1000;
+    let today = 0;
+    let week = 0;
+    let total = 0;
+    mine.forEach(j => {
+      total += j.fee;
+      const t = j.deliveredAt ? new Date(j.deliveredAt).getTime() : NaN;
+      if (!Number.isNaN(t)) {
+        if (t >= startToday) today += j.fee;
+        if (t >= weekAgo) week += j.fee;
+      }
+    });
+    return { today, week, total, jobs: mine };
+  }, [deliveryFleet, currentUser]);
+
+  const myPayoutRequests = useMemo(
+    () => payoutRequests.filter(p => p.riderName === currentUser?.username),
+    [payoutRequests, currentUser]
+  );
+
+  const payoutAvailable = useMemo(() => {
+    const requested = payoutRequests
+      .filter(p => p.riderName === currentUser?.username && p.status !== 'Rejected')
+      .reduce((sum, p) => sum + p.amount, 0);
+    return Math.max(0, riderEarnings.total - requested);
+  }, [payoutRequests, currentUser, riderEarnings]);
+
+  const filteredRiderJobs = useMemo(() => {
+    if (riderJobFilter === 'available') return deliveryFleet.filter(j => j.status === 'Available');
+    if (riderJobFilter === 'active') return deliveryFleet.filter(j => j.status === 'Assigned' || j.status === 'Picked Up');
+    return deliveryFleet.filter(j => j.status === 'Delivered');
+  }, [deliveryFleet, riderJobFilter]);
+
+  // Rider profile badge data: approval record + lifetime delivery count.
+  const myRiderApproval = useMemo(
+    () => riderApprovals.find(r =>
+      (!!currentUser?.phone && normalizePhone(r.phone) === normalizePhone(currentUser.phone)) ||
+      r.riderName === currentUser?.username
+    ),
+    [riderApprovals, currentUser]
+  );
+
+  const totalRiderDeliveries = useMemo(
+    () => deliveryFleet.filter(j => j.status === 'Delivered' && j.riderName === currentUser?.username).length,
+    [deliveryFleet, currentUser]
+  );
+
+  // Leaderboard: rank riders by deliveries this week, then all-time.
+  const riderLeaderboard = useMemo(() => {
+    const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const board = new Map<string, { name: string; week: number; total: number }>();
+    deliveryFleet.filter(j => j.status === 'Delivered' && j.riderName).forEach(j => {
+      const entry = board.get(j.riderName!) || { name: j.riderName!, week: 0, total: 0 };
+      entry.total += 1;
+      const t = j.deliveredAt ? new Date(j.deliveredAt).getTime() : NaN;
+      if (!Number.isNaN(t) && t >= weekAgo) entry.week += 1;
+      board.set(j.riderName!, entry);
+    });
+    return Array.from(board.values()).sort((a, b) => b.week - a.week || b.total - a.total);
+  }, [deliveryFleet]);
+
+  // Zone fee suggestion: match the job destination against admin-configured zones.
+  const suggestedFeeFor = (destination: string): number | undefined => {
+    const dest = (destination || '').toLowerCase();
+    const hit = zoneFees.find(z => z.zone && dest.includes(z.zone.toLowerCase()));
+    return hit ? hit.fee : undefined;
+  };
+
+  const saveZoneFee = async () => {
+    const zone = zoneForm.zone.trim();
+    const fee = parseFloat(zoneForm.fee);
+    if (!zone || !fee || fee <= 0) {
+      triggerToast('Enter a zone name and a valid fee.', 'error');
+      return;
+    }
+    const existing = zoneFees.find(z => z.zone.toLowerCase() === zone.toLowerCase());
+    if (existing) {
+      const { error } = await supabase.from('zone_fees').update({ fee }).eq('id', existing.id);
+      if (error) {
+        triggerToast('Failed to update zone fee: ' + error.message, 'error');
+        return;
+      }
+      setZoneFees(zoneFees.map(z => z.id === existing.id ? { ...z, fee } : z));
+    } else {
+      const row = { id: generateUniqueId('zf'), zone, fee };
+      const { error } = await supabase.from('zone_fees').insert([row]);
+      if (error) {
+        triggerToast('Failed to save zone fee: ' + error.message, 'error');
+        return;
+      }
+      setZoneFees([...zoneFees, row]);
+    }
+    setZoneForm({ zone: '', fee: '' });
+    triggerToast('Zone fee saved. Riders now see it as a suggested transit fee.', 'success');
+  };
+
+  const deleteZoneFee = async (id: string) => {
+    const { error } = await supabase.from('zone_fees').delete().eq('id', id);
+    if (error) {
+      triggerToast('Failed to delete zone fee: ' + error.message, 'error');
+      return;
+    }
+    setZoneFees(zoneFees.filter(z => z.id !== id));
+    triggerToast('Zone fee removed.', 'info');
+  };
+
+  const toggleRiderOnline = () => {
+    setRiderOnline(prev => {
+      const next = !prev;
+      riderOnlineRef.current = next;
+      localStorage.setItem('mm_rider_online', String(next));
+      triggerToast(next ? 'You are ONLINE — new jobs can be claimed.' : 'You are OFFLINE — job claiming disabled.', 'info');
+      return next;
+    });
+  };
+
+  const requestPayout = async () => {
+    if (!currentUser) return;
+    const amount = parseFloat(payoutAmount);
+    if (!amount || amount <= 0) {
+      triggerToast('Enter a valid payout amount.', 'error');
+      return;
+    }
+    if (amount > payoutAvailable) {
+      triggerToast('Amount exceeds your available balance.', 'error');
+      return;
+    }
+    const newRequest = {
+      id: generateUniqueId('po'),
+      rider_name: currentUser.username,
+      phone: currentUser.phone,
+      amount,
+      status: 'Pending'
+    };
+    const { error } = await supabase.from('payout_requests').insert([newRequest]);
+    if (error) {
+      triggerToast('Payout request failed: ' + error.message, 'error');
+      return;
+    }
+    setPayoutRequests([{
+      id: newRequest.id,
+      riderName: currentUser.username,
+      phone: currentUser.phone,
+      amount,
+      status: 'Pending',
+      createdAt: new Date().toLocaleString()
+    }, ...payoutRequests]);
+    setPayoutAmount('');
+    triggerToast('M-Pesa payout request submitted! Admin will process it shortly.', 'success');
+  };
+
+  const resolvePayoutRequest = async (id: string, status: 'Paid' | 'Rejected') => {
+    const { error } = await supabase.from('payout_requests').update({ status }).eq('id', id);
+    if (error) {
+      triggerToast('Failed to update payout: ' + error.message, 'error');
+      return;
+    }
+    setPayoutRequests(payoutRequests.map(p => p.id === id ? { ...p, status } : p));
+    triggerToast(status === 'Paid' ? 'Payout marked as Paid via M-Pesa.' : 'Payout request rejected.', 'success');
+  };
+
+  // Live job alerts: poll delivery_jobs while a rider is signed in and toast new orders.
+  const knownJobIdsRef = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    if (!currentUser || currentUser.role !== 'rider') {
+      knownJobIdsRef.current = null;
+      return;
+    }
+    const riderId = currentUser.id;
+    const poll = async () => {
+      const { data } = await supabase.from('delivery_jobs').select('*').order('created_at', { ascending: false });
+      if (!data) return;
+      const mapped = data.map(mapDeliveryJobRow);
+      if (knownJobIdsRef.current === null) {
+        knownJobIdsRef.current = new Set(mapped.map(j => j.id));
+        setDeliveryFleet(mapped);
+        return;
+      }
+      const fresh = mapped.filter(j => !knownJobIdsRef.current!.has(j.id));
+      knownJobIdsRef.current = new Set(mapped.map(j => j.id));
+      setDeliveryFleet(mapped);
+      fresh.filter(j => j.status === 'Available').forEach(j => {
+        if (!riderOnlineRef.current) {
+          setOfflineQueueIds(prev => (prev.includes(j.id) ? prev : [...prev, j.id]));
+          return;
+        }
+        triggerToast(`New delivery order posted: ${j.destination} — Transit fee Ksh ${j.fee}`, 'info');
+        setNotifications(prev => [{
+          id: `alert_${j.id}`,
+          userId: riderId,
+          type: 'system' as const,
+          content: `New delivery order posted: ${j.destination} (Merchant: ${j.merchantName}) — Transit fee Ksh ${j.fee}.`,
+          read: false,
+          createdAt: new Date().toLocaleString()
+        }, ...prev]);
+      });
+    };
+    poll();
+    const timer = setInterval(poll, 20000);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id, currentUser?.role]);
+
+  // Broadcast release notifications to customer, vendor and rider when escrow is released.
+  const broadcastOrderReleaseNotifications = async (orderId: string) => {
+    try {
+      const job = deliveryFleet.find((j) => j.orderId === orderId);
+      const tx = escrowLedger.find((t) => t.orderId === orderId);
+
+      let customerPhone = job?.customerPhone || '';
+      let merchantName = job?.merchantName || tx?.vendorName || '';
+      let riderName = job?.riderName || '';
+
+      if (!customerPhone || !merchantName) {
+        const { data: dbJob } = await supabase
+          .from('delivery_jobs')
+          .select('*')
+          .eq('order_id', orderId)
+          .maybeSingle();
+        if (dbJob) {
+          customerPhone = customerPhone || dbJob.customer_phone || '';
+          merchantName = merchantName || dbJob.merchant_name || '';
+          riderName = riderName || dbJob.rider_name || '';
+        }
+      }
+
+      // Resolve recipient profile IDs by phone (customer) or by store/username (vendor/rider)
+      const resolveProfileId = async (phone?: string, name?: string): Promise<string | null> => {
+        if (phone) {
+          const { data } = await supabase.from('profiles').select('id').eq('phone', phone).maybeSingle();
+          if (data?.id) return data.id;
+        }
+        if (name) {
+          const { data: byEntity } = await supabase.from('profiles').select('id').eq('linked_entity_name', name).maybeSingle();
+          if (byEntity?.id) return byEntity.id;
+          const { data: byUsername } = await supabase.from('profiles').select('id').ilike('username', name).maybeSingle();
+          if (byUsername?.id) return byUsername.id;
+        }
+        return null;
+      };
+
+      const customerId = await resolveProfileId(customerPhone || undefined);
+      const vendorId = await resolveProfileId(undefined, merchantName || undefined);
+      const riderId = riderName ? await resolveProfileId(undefined, riderName) : null;
+
+      const rows = [
+        {
+          id: generateUniqueId('n'),
+          user_id: customerId,
+          phone: customerPhone || null,
+          target_name: null,
+          recipient_role: 'customer',
+          order_id: orderId,
+          content: `Escrow released: your payment for order ${orderId} was approved and sent to ${merchantName || 'the vendor'}. Thank you for shopping securely!`
+        },
+        {
+          id: generateUniqueId('n'),
+          user_id: vendorId,
+          phone: null,
+          target_name: merchantName || null,
+          recipient_role: 'vendor',
+          order_id: orderId,
+          content: `Payout released: funds for order ${orderId} have been released to ${merchantName || 'your store'}.`
+        },
+        {
+          id: generateUniqueId('n'),
+          user_id: riderId,
+          phone: null,
+          target_name: riderName || null,
+          recipient_role: 'rider',
+          order_id: orderId,
+          content: `Delivery confirmed: order ${orderId} passed verification and escrow was released. Your dispatch fee has been approved.`
+        }
+      ];
+
+      const { error } = await supabase.from('notifications').insert(rows);
+      if (error) {
+        console.warn('Failed to store order notifications:', error.message);
+      }
+    } catch (err) {
+      console.warn('Order notification broadcast failed:', err);
     }
   };
 
@@ -1825,8 +2427,8 @@ export default function App() {
       <header className="sticky top-0 z-40 w-full backdrop-blur-xl bg-red/80 border-b border-white/10 px-4 py-4">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-lg flex items-center justify-center bg-white text-red font-black tracking-tighter text-xl">
-              M
+            <div className="w-10 h-10 rounded-lg flex items-center justify-center bg-white text-black">
+              <ShoppingBag className="w-6 h-6" strokeWidth={2.5} />
             </div>
             <div>
               <h1 className="text-base font-bold tracking-widest text-white uppercase">Match & Market</h1>
@@ -1853,9 +2455,10 @@ export default function App() {
                 </span>
                 <button 
                   onClick={() => { setIsAuthOpen(false); setIsDashboardOpen(true); }}
-                  className="px-4 py-2 rounded-full text-xs font-semibold uppercase tracking-wider text-red bg-white hover:bg-zinc-200 transition-all"
+                  className="px-5 py-2.5 rounded-full text-xs font-black uppercase tracking-wider text-black bg-white border-2 border-white hover:bg-zinc-200 transition-all shadow-[0_0_14px_rgba(255,255,255,0.45)] flex items-center gap-2"
                 >
-                  My M & M Hub
+                  <Shield className="w-4 h-4" />
+                  Control Center
                 </button>
                 <button 
                   onClick={handleSignOut}
@@ -1868,10 +2471,63 @@ export default function App() {
             ) : (
               <button 
                 onClick={() => { setAuthMode('login'); setIsAuthOpen(true); setIsDashboardOpen(false); }}
-                className="px-4 py-2 rounded-full text-xs font-bold uppercase tracking-wider text-red bg-white hover:bg-zinc-200 transition-all"
+                className="px-5 py-2.5 rounded-full text-xs font-black uppercase tracking-wider text-black bg-white border-2 border-white hover:bg-zinc-200 transition-all shadow-[0_0_14px_rgba(255,255,255,0.45)] flex items-center gap-2"
               >
+                <LogIn className="w-4 h-4" />
                 Sign In
               </button>
+            )}
+
+            {/* Quick access messages & notifications bell */}
+            {currentUser && (
+              <div className="relative">
+                <button
+                  onClick={() => setIsNotificationsOpen((v) => !v)}
+                  title="Messages & Notifications"
+                  className="p-2 border border-white/10 rounded-full hover:bg-white/10 transition-colors text-zinc-500 hover:text-white relative"
+                >
+                  <Bell className="w-4 h-4" />
+                  {notifications.filter((n) => n.userId === currentUser.id && !n.read).length > 0 && (
+                    <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center">
+                      {notifications.filter((n) => n.userId === currentUser.id && !n.read).length}
+                    </span>
+                  )}
+                </button>
+
+                {isNotificationsOpen && (
+                  <div className="absolute right-0 top-full mt-2 w-80 liquid-glass-heavy rounded-2xl border border-white/15 p-4 z-50 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-[10px] font-extrabold uppercase tracking-widest text-white">Messages & Notifications</h4>
+                      <button
+                        onClick={() => setIsNotificationsOpen(false)}
+                        className="p-1 rounded-full hover:bg-white/10 text-zinc-400"
+                        title="Close"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    <div className="space-y-2 max-h-72 overflow-y-auto">
+                      {notifications.filter((n) => n.userId === currentUser.id).length === 0 ? (
+                        <p className="text-xs text-zinc-500">No notifications yet.</p>
+                      ) : (
+                        notifications.filter((n) => n.userId === currentUser.id).map((note) => (
+                          <div key={note.id} className={`rounded-xl p-2 ${note.read ? 'bg-white/5 text-zinc-300' : 'bg-white text-black'}`}>
+                            <div className={`text-[9px] uppercase tracking-widest ${note.read ? 'text-zinc-400' : 'text-zinc-600'}`}>{note.type}</div>
+                            <div className="text-[11px] font-bold">{note.content}</div>
+                            <div className={`text-[8px] uppercase tracking-wider mt-1 ${note.read ? 'text-zinc-500' : 'text-zinc-600'}`}>{note.createdAt}</div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                    <button
+                      onClick={() => setNotifications(notifications.map((note) => note.userId === currentUser.id ? { ...note, read: true } : note))}
+                      className="w-full py-2 rounded-xl bg-white text-black uppercase text-[10px] font-bold hover:bg-zinc-200 transition-all"
+                    >
+                      Mark all read
+                    </button>
+                  </div>
+                )}
+              </div>
             )}
 
             {/* User profile quick access */}
@@ -1891,14 +2547,7 @@ export default function App() {
               </button>
             )}
 
-            {/* Hidden admin lock gate */}
-            <button
-              onClick={() => setIsAdminGatewayOpen(true)}
-              title="Admin Portal Login"
-              className="p-2 border border-white/10 rounded-full hover:bg-white/10 transition-colors text-zinc-500 hover:text-white"
-            >
-              <Lock className="w-4 h-4" />
-            </button>
+            {/* Admin access now goes through the standard Sign In form only */}
           </div>
         </div>
       </header>
@@ -2344,8 +2993,20 @@ export default function App() {
             {authMode === 'login' && (
               <form onSubmit={handleAuthSubmit} className="space-y-4">
                 <div className="text-center mb-6">
-                  <h3 className="text-base font-bold uppercase tracking-widest text-white">Ecosystem Authentication</h3>
-                  <p className="text-[10px] text-zinc-500 mt-1">Authenticate transaction profile credentials safely.</p>
+                  <h3 className="text-base font-bold uppercase tracking-widest text-white">Match & Market</h3>
+                  <p className="text-[10px] text-zinc-500 mt-1">Are you signing in or Signing Up for a wonderful shopping experience?</p>
+                </div>
+                <div>
+                  <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">Signing In As</label>
+                  <select
+                    value={authRole}
+                    onChange={(e) => setAuthRole(e.target.value as 'customer' | 'vendor' | 'rider')}
+                    className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
+                  >
+                    <option value="customer">Customer/User</option>
+                    <option value="vendor">Merchant Shop Owner (SaaS)</option>
+                    <option value="rider">Boda Delivery Rider</option>
+                  </select>
                 </div>
                 <div>
                   <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">Username</label>
@@ -2456,14 +3117,27 @@ export default function App() {
                   </div>
                 </div>
                 <div>
-                  <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">Profile Picture URL</label>
-                  <input
-                    type="url"
-                    placeholder="Optional image link"
-                    value={profilePhotoUrl}
-                    onChange={(e) => setProfilePhotoUrl(e.target.value)}
-                    className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
-                  />
+                  <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">Profile Picture (JPEG / PNG)</label>
+                  <div className="flex items-center gap-3">
+                    {profilePhotoUrl ? (
+                      <img src={profilePhotoUrl} alt="Profile preview" className="w-10 h-10 rounded-full object-cover border border-white/20" />
+                    ) : (
+                      <div className="w-10 h-10 rounded-full bg-white/10 flex items-center justify-center text-zinc-400">
+                        <Users className="w-4 h-4" />
+                      </div>
+                    )}
+                    <input
+                      type="file"
+                      accept="image/jpeg,image/png"
+                      onChange={handleProfilePictureFile}
+                      className="text-[10px] text-zinc-400 file:mr-3 file:px-3 file:py-2 file:rounded-lg file:border-0 file:bg-white file:text-black file:text-[10px] file:font-bold file:uppercase file:cursor-pointer"
+                    />
+                    {profilePhotoUrl && (
+                      <button type="button" onClick={() => setProfilePhotoUrl('')} className="text-[10px] uppercase text-zinc-500 hover:text-white">
+                        Remove
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <div>
                   <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">Home / Pickup Address</label>
@@ -2522,6 +3196,147 @@ export default function App() {
                 </button>
                 <p className="text-center text-[10px] text-zinc-500">
                   Already registered? <span onClick={() => setAuthMode('login')} className="text-white hover:underline cursor-pointer">Login here</span>
+                </p>
+              </form>
+            )}
+
+            {authMode === 'vendor_register' && (
+              <form onSubmit={handleVendorRegisterSubmit} className="space-y-4">
+                <div className="text-center mb-6">
+                  <h3 className="text-base font-bold uppercase tracking-widest text-white">Merchant Shop Owner Registration</h3>
+                  <p className="text-[10px] text-zinc-500 mt-1">Complete your store details. You can sign in once the admin approves your application (max 3 days).</p>
+                </div>
+                <div>
+                  <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">Store Name</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Rongai Fast Food"
+                    value={regShopName}
+                    onChange={(e) => setRegShopName(e.target.value)}
+                    className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">SaaS Category</label>
+                  <select
+                    value={regCategory}
+                    onChange={(e) => setRegCategory(e.target.value)}
+                    className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
+                  >
+                    <option value="Food & Beverages">Food & Beverages</option>
+                    <option value="M & M Soko">M & M Soko (Groceries)</option>
+                    <option value="M & M Services">M & M Services</option>
+                    <option value="M & M Fun Zone">M & M Fun Zone</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">M-Pesa Mobile Number</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. 0711223344"
+                    value={regPhone}
+                    onChange={(e) => setRegPhone(e.target.value)}
+                    className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">Password</label>
+                    <input
+                      type="password"
+                      placeholder="Create dashboard password"
+                      value={regShopPassword}
+                      onChange={(e) => setRegShopPassword(e.target.value)}
+                      className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">Confirm Password</label>
+                    <input
+                      type="password"
+                      placeholder="Confirm password"
+                      value={regShopConfirmPassword}
+                      onChange={(e) => setRegShopConfirmPassword(e.target.value)}
+                      className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
+                    />
+                  </div>
+                </div>
+                <button type="submit" className="w-full py-2.5 bg-white text-black font-extrabold uppercase text-xs rounded-xl">
+                  Submit Store Application
+                </button>
+                <p className="text-center text-[10px] text-zinc-500">
+                  Already approved? <span onClick={() => setAuthMode('login')} className="text-white hover:underline cursor-pointer">Login here</span>
+                </p>
+              </form>
+            )}
+
+            {authMode === 'rider_register' && (
+              <form onSubmit={handleRiderRegisterSubmit} className="space-y-4">
+                <div className="text-center mb-6">
+                  <h3 className="text-base font-bold uppercase tracking-widest text-white">Boda Rider Transit Registration</h3>
+                  <p className="text-[10px] text-zinc-500 mt-1">Complete your rider details. You can sign in once the admin approves your application (max 3 days).</p>
+                </div>
+                <div>
+                  <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">Rider Full Name</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Alex Njuguna"
+                    value={regRiderName}
+                    onChange={(e) => setRegRiderName(e.target.value)}
+                    className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">Motorcycle Plate</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. KMCE 224Y"
+                    value={regPlate}
+                    onChange={(e) => setRegPlate(e.target.value)}
+                    className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">M-Pesa Mobile Number</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. 0799887766"
+                    value={regRiderPhone}
+                    onChange={(e) => setRegRiderPhone(e.target.value)}
+                    className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">Password</label>
+                    <input
+                      type="password"
+                      placeholder="Create password"
+                      value={regRiderPassword}
+                      onChange={(e) => setRegRiderPassword(e.target.value)}
+                      className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">Confirm Password</label>
+                    <input
+                      type="password"
+                      placeholder="Confirm password"
+                      value={regRiderConfirmPassword}
+                      onChange={(e) => setRegRiderConfirmPassword(e.target.value)}
+                      className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
+                    />
+                  </div>
+                </div>
+                <button
+                  type="submit"
+                  disabled={isRegisteringRider}
+                  className={`w-full py-2.5 bg-white text-black font-extrabold uppercase text-xs rounded-xl ${isRegisteringRider ? 'opacity-60 cursor-not-allowed' : 'hover:bg-zinc-200'} transition-all`}
+                >
+                  {isRegisteringRider ? 'Submitting...' : 'Submit Rider Application'}
+                </button>
+                <p className="text-center text-[10px] text-zinc-500">
+                  Already approved? <span onClick={() => setAuthMode('login')} className="text-white hover:underline cursor-pointer">Login here</span>
                 </p>
               </form>
             )}
@@ -2703,7 +3518,7 @@ export default function App() {
               <X className="w-4 h-4" />
             </button>
 
-            <div className="mb-6">
+            <div className="mb-6 shrink-0">
               <h2 className="text-xl font-black uppercase tracking-widest text-white mb-2 flex items-center gap-2">
                 <Shield className="w-5 h-5 text-white" />
                 <span>M&M Control Center</span>
@@ -2711,7 +3526,7 @@ export default function App() {
               <p className="text-[10px] text-zinc-500 tracking-wider">Access local client details, billing profiles, and rider delivery information.</p>
             </div>
 
-            <div className="flex border-b border-white/10 mb-6 overflow-x-auto pb-1 gap-2">
+            <div className="flex border-b border-white/10 mb-6 overflow-x-auto pb-1 gap-2 shrink-0">
                 {([
                   { tab: 'customer', title: '1. Customer Portal' },
                   { tab: 'vendor', title: '2. Vendor Hub(SaaS)' },
@@ -2788,15 +3603,30 @@ export default function App() {
                   />
                 </div>
                 <div className="md:col-span-2">
-                  <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">Profile Picture URL</label>
-                  <input
-                    type="url"
-                    placeholder="Image link (optional)"
-                    value={profilePhotoUrl}
-                    onChange={(e) => setProfilePhotoUrl(e.target.value)}
-                    className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
-                  />
+                  <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">Profile Picture (JPEG / PNG)</label>
+                  <div className="flex items-center gap-3">
+                    {profilePhotoUrl ? (
+                      <img src={profilePhotoUrl} alt="Profile preview" className="w-10 h-10 rounded-full object-cover border border-white/20" />
+                    ) : (
+                      <div className="w-10 h-10 rounded-full bg-white/10 flex items-center justify-center text-zinc-400">
+                        <Users className="w-4 h-4" />
+                      </div>
+                    )}
+                    <input
+                      type="file"
+                      accept="image/jpeg,image/png"
+                      onChange={handleProfilePictureFile}
+                      className="text-[10px] text-zinc-400 file:mr-3 file:px-3 file:py-2 file:rounded-lg file:border-0 file:bg-white file:text-black file:text-[10px] file:font-bold file:uppercase file:cursor-pointer"
+                    />
+                    {profilePhotoUrl && (
+                      <button type="button" onClick={() => setProfilePhotoUrl('')} className="text-[10px] uppercase text-zinc-500 hover:text-white">
+                        Remove
+                      </button>
+                    )}
+                  </div>
                 </div>
+                {currentUser?.role !== 'admin' && (
+                  <>
                 <div className="md:col-span-2">
                   <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">Home / Pickup Address</label>
                   <input
@@ -2817,6 +3647,8 @@ export default function App() {
                     className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
                   />
                 </div>
+                  </>
+                )}
                 <div className="md:col-span-2">
                   <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">Profile Bio</label>
                   <textarea
@@ -2827,29 +3659,24 @@ export default function App() {
                     className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
                   />
                 </div>
-                <div className="md:col-span-2">
-                  <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">Pickup Notes</label>
-                  <textarea
-                    rows={2}
-                    placeholder="Any extra delivery or pickup instructions"
-                    value={profilePickupNote}
-                    onChange={(e) => setProfilePickupNote(e.target.value)}
-                    className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
-                  />
-                </div>
+                {currentUser?.role !== 'admin' && (
+                  <div className="md:col-span-2">
+                    <label className="block text-[10px] uppercase font-bold text-zinc-400 mb-1">Pickup Notes</label>
+                    <textarea
+                      rows={2}
+                      placeholder="Any extra delivery or pickup instructions"
+                      value={profilePickupNote}
+                      onChange={(e) => setProfilePickupNote(e.target.value)}
+                      className="w-full bg-black border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
+                    />
+                  </div>
+                )}
                 <div className="md:col-span-2 flex flex-col gap-2">
                   <button
                     type="submit"
                     className="w-full py-3 bg-white text-black font-bold uppercase text-xs rounded-xl hover:bg-zinc-200 transition-all"
                   >
                     {profileSaveLoading ? 'Updating Profile...' : 'Update Profile'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setDashboardTab(profileReturnTab)}
-                    className="w-full py-2.5 border border-white/10 rounded-xl text-[10px] font-bold uppercase tracking-wider text-zinc-300 hover:text-white hover:bg-white/10 transition-all"
-                  >
-                    Back to previous view
                   </button>
                 </div>
               </form>
@@ -2924,45 +3751,98 @@ export default function App() {
                       )}
                     </div>
                   </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div className="liquid-glass p-5 rounded-2xl border border-white/10">
-                      <h3 className="text-xs font-extrabold tracking-widest uppercase text-white mb-3">Live Payment Records</h3>
-                      <div className="space-y-4">
-                        {escrowLedger.length === 0 ? (
-                          <p className="text-xs text-zinc-500">No active holding transactions recorded.</p>
-                        ) : (
-                          escrowLedger.map((tx) => (
-                            <div key={tx.id} className="p-3 rounded-xl bg-black border border-white/5 space-y-2">
-                              <div className="flex justify-between items-center text-xs">
-                                <span className="font-mono text-zinc-400 font-bold">{tx.orderId}</span>
-                                <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider ${
-                                  tx.status === 'Holding' ? 'bg-zinc-850 text-white border border-white/20' : 'bg-white text-black font-extrabold'
-                                }`}>
-                                  {tx.status}
-                                </span>
-                              </div>
-                              <p className="text-xs font-semibold">{tx.vendorName}</p>
-                              <div className="flex justify-between text-[10px] text-zinc-500 border-t border-white/5 pt-2">
-                                <span>Payer: {tx.payer}</span>
-                                <span className="text-white font-mono font-bold">Ksh {tx.amount}</span>
-                              </div>
-                            </div>
-                          ))
-                        )}
+                  <div className="liquid-glass p-5 rounded-2xl border border-white/10 space-y-4">
+                    <h3 className="text-xs font-extrabold tracking-widest uppercase text-white">Interactive Soko Chama Bulk Buying</h3>
+                    <p className="text-xs text-zinc-400 leading-relaxed">
+                      Chama wholesale group buying structures are checked, packaged, and mapped to local transit depots.
+                    </p>
+                    {bodaPoolWindow !== null && (
+                      <div className="p-3 bg-blue-500/10 border border-blue-500/20 text-blue-400 rounded-xl text-xs flex justify-between items-center">
+                        <span>Active Boda-Pooling window is running:</span>
+                        <span className="font-bold font-mono">{bodaPoolWindow} min left</span>
                       </div>
-                    </div>
-
-                    <div className="liquid-glass p-5 rounded-2xl border border-white/10 space-y-4">
-                      <h3 className="text-xs font-extrabold tracking-widest uppercase text-white">Interactive Soko Chama Bulk Buying</h3>
-                      <p className="text-xs text-zinc-400 leading-relaxed">
-                        Chama wholesale group buying structures are checked, packaged, and mapped to local transit depots.
-                      </p>
-                      {bodaPoolWindow !== null && (
-                        <div className="p-3 bg-blue-500/10 border border-blue-500/20 text-blue-400 rounded-xl text-xs flex justify-between items-center">
-                          <span>Active Boda-Pooling window is running:</span>
-                          <span className="font-bold font-mono">{bodaPoolWindow} min left</span>
-                        </div>
+                    )}
+                    <div className="space-y-3 max-h-96 overflow-y-auto pr-1">
+                      {chamaDeals.length === 0 && (
+                        <p className="text-xs text-zinc-500">No wholesale pools available right now.</p>
                       )}
+                      {chamaDeals.map((deal) => {
+                        const isMember = !!currentUser && deal.backers.includes(currentUser.phone);
+                        const isDeclined = declinedChamaDeals.includes(deal.id);
+                        const poolActive = deal.filledPortions < deal.targetPortions;
+                        return (
+                          <div key={deal.id} className="p-3 rounded-xl bg-black/60 border border-white/5 text-[11px] space-y-2">
+                            <div className="flex justify-between items-center gap-2">
+                              <p className="font-bold text-white leading-snug">{deal.title}</p>
+                              <span className={`px-2 py-0.5 rounded text-[9px] font-extrabold uppercase tracking-wider border shrink-0 ${
+                                poolActive ? 'text-green-400 border-green-500/30 bg-green-500/10' : 'text-zinc-500 border-zinc-600/30 bg-zinc-800/40'
+                              }`}>
+                                {poolActive ? 'Active' : 'Dormant'}
+                              </span>
+                            </div>
+                            <div className="flex justify-between text-[10px] text-zinc-400">
+                              <span>{deal.merchant}</span>
+                              <span>{deal.filledPortions}/{deal.targetPortions} Portions</span>
+                            </div>
+                            <div className="w-full bg-zinc-900 rounded-full h-1.5 overflow-hidden">
+                              <div
+                                className="bg-blue-500 h-1.5"
+                                style={{ width: `${Math.min(100, (deal.filledPortions / deal.targetPortions) * 100)}%` }}
+                              ></div>
+                            </div>
+                            {isMember ? (
+                              <div className="space-y-2">
+                                <div className="p-2 rounded-lg bg-blue-500/10 border border-blue-500/20 text-blue-300 flex flex-col sm:flex-row sm:justify-between gap-1">
+                                  <span>You are a member of this pool.</span>
+                                  <span className="font-bold">Your contribution: Ksh {deal.portionPrice}</span>
+                                </div>
+                                <div>
+                                  <div className="text-[9px] uppercase tracking-widest text-zinc-500 mb-1">Signed-up members ({deal.backers.length})</div>
+                                  <div className="flex flex-wrap gap-1">
+                                    {deal.backers.map((member, idx) => (
+                                      <span
+                                        key={`${member}-${idx}`}
+                                        className={`px-2 py-0.5 rounded-full text-[9px] font-mono border ${
+                                          member === currentUser?.phone ? 'bg-white text-black border-white font-bold' : 'bg-zinc-900 text-zinc-400 border-white/10'
+                                        }`}
+                                      >
+                                        {member}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                                <div className="flex justify-end">
+                                  <button
+                                    onClick={() => exitChamaDealPool(deal.id)}
+                                    className="px-2 py-1 bg-red-950 text-red-400 border border-red-500/20 font-bold uppercase rounded hover:text-white"
+                                  >
+                                    Exit Pool
+                                  </button>
+                                </div>
+                              </div>
+                            ) : isDeclined ? (
+                              <p className="text-[10px] text-zinc-500 uppercase tracking-widest">You declined this pool.</p>
+                            ) : poolActive ? (
+                              <div className="flex gap-2 justify-end">
+                                <button
+                                  onClick={() => declineChamaDeal(deal.id)}
+                                  className="px-2 py-1 bg-zinc-900 text-zinc-400 border border-white/10 font-bold uppercase rounded hover:text-white"
+                                >
+                                  Decline
+                                </button>
+                                <button
+                                  onClick={() => joinChamaDealPool(deal.id)}
+                                  className="px-2 py-1 bg-white text-black font-bold uppercase rounded hover:bg-zinc-200"
+                                >
+                                  Join
+                                </button>
+                              </div>
+                            ) : (
+                              <p className="text-[10px] text-zinc-500">Pool closed - target reached.</p>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 </div>
@@ -3254,10 +4134,175 @@ export default function App() {
                     </div>
                   ) : (
                     /* Fully Approved Rider Dispatch Board */
-                    <div className="liquid-glass p-5 rounded-2xl border border-white/10 space-y-4">
-                      <h3 className="text-xs font-extrabold tracking-widest uppercase text-white">Live Delivery Order Desk</h3>
-                      <div className="space-y-4 max-h-87.5 overflow-y-auto pr-2">
-                        {deliveryFleet.map((job) => (
+                    <div className="space-y-6">
+                      {/* Rider profile badge */}
+                      <div className="liquid-glass p-4 rounded-2xl border border-white/10 flex flex-wrap items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-white text-black flex items-center justify-center">
+                          <Bike className="w-6 h-6" strokeWidth={2.5} />
+                        </div>
+                        <div className="flex-1 min-w-40">
+                          <h3 className="text-xs font-extrabold uppercase tracking-widest text-white">{currentUser?.username}</h3>
+                          <p className="text-[10px] text-zinc-500 font-mono">
+                            Plate: {myRiderApproval?.motorcyclePlate || '—'} | Licensed: {myRiderApproval?.approvedAt || myRiderApproval?.timestamp || '—'}
+                          </p>
+                        </div>
+                        <div className="px-3 py-1.5 rounded-full bg-white text-black text-[10px] font-black uppercase tracking-wider">
+                          {totalRiderDeliveries} Deliveries Completed
+                        </div>
+                      </div>
+
+                      {/* Rider status, earnings & M-Pesa payout desk */}
+                      <div className="liquid-glass p-5 rounded-2xl border border-white/10 space-y-4">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                          <div>
+                            <h3 className="text-xs font-extrabold tracking-widest uppercase text-white">Rider Earnings Desk</h3>
+                            <p className="text-[10px] text-zinc-500">Your transit fee income from completed deliveries.</p>
+                          </div>
+                          <button
+                            onClick={toggleRiderOnline}
+                            className={`px-4 py-2 rounded-full text-[10px] font-black uppercase tracking-wider border-2 transition-all ${
+                              riderOnline ? 'bg-white text-black border-white' : 'bg-transparent text-zinc-400 border-white/20'
+                            }`}
+                          >
+                            {riderOnline ? 'Online — Accepting Jobs' : 'Offline — Hidden From Jobs'}
+                          </button>
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-3">
+                          <div className="p-3 rounded-xl bg-black border border-white/5 text-center">
+                            <div className="text-[9px] uppercase tracking-widest text-zinc-500 mb-1">Today</div>
+                            <div className="text-sm font-black text-white font-mono">Ksh {riderEarnings.today}</div>
+                          </div>
+                          <div className="p-3 rounded-xl bg-black border border-white/5 text-center">
+                            <div className="text-[9px] uppercase tracking-widest text-zinc-500 mb-1">This Week</div>
+                            <div className="text-sm font-black text-white font-mono">Ksh {riderEarnings.week}</div>
+                          </div>
+                          <div className="p-3 rounded-xl bg-black border border-white/5 text-center">
+                            <div className="text-[9px] uppercase tracking-widest text-zinc-500 mb-1">Total</div>
+                            <div className="text-sm font-black text-white font-mono">Ksh {riderEarnings.total}</div>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
+                          <div>
+                            <label className="block text-[9px] uppercase font-bold text-zinc-400 mb-1">
+                              Available for M-Pesa payout: Ksh {payoutAvailable}
+                            </label>
+                            <input
+                              type="number"
+                              min="1"
+                              placeholder="Amount to withdraw"
+                              value={payoutAmount}
+                              onChange={(e) => setPayoutAmount(e.target.value)}
+                              className="w-full bg-black border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
+                            />
+                          </div>
+                          <button
+                            onClick={requestPayout}
+                            className="w-full py-2.5 bg-white text-black font-extrabold uppercase text-[10px] rounded-xl hover:bg-zinc-200 transition-all"
+                          >
+                            Request M-Pesa Payout
+                          </button>
+                        </div>
+
+                        {myPayoutRequests.length > 0 && (
+                          <div className="space-y-2">
+                            <div className="text-[9px] uppercase tracking-widest text-zinc-500">My payout requests</div>
+                            {myPayoutRequests.map((p) => (
+                              <div key={p.id} className="flex justify-between items-center p-2 rounded-lg bg-black border border-white/5 text-[10px]">
+                                <span className="text-white font-bold font-mono">Ksh {p.amount}</span>
+                                <span className="text-zinc-500">{p.createdAt}</span>
+                                <span className={`px-2 py-0.5 rounded font-bold uppercase ${p.status === 'Paid' ? 'bg-white text-black' : p.status === 'Rejected' ? 'bg-red-950 text-red-400' : 'bg-zinc-800 text-white'}`}>
+                                  {p.status}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Offline job queue: orders posted while the rider was offline */}
+                      {riderOnline && offlineQueueIds.length > 0 && (
+                        <div className="liquid-glass p-5 rounded-2xl border border-white/20 space-y-3">
+                          <div className="flex justify-between items-center">
+                            <h3 className="text-xs font-extrabold tracking-widest uppercase text-white">Offline Job Queue — Missed While Offline</h3>
+                            <button
+                              onClick={() => setOfflineQueueIds([])}
+                              className="text-[9px] uppercase font-bold text-zinc-500 hover:text-white"
+                            >
+                              Dismiss
+                            </button>
+                          </div>
+                          <div className="space-y-2">
+                            {deliveryFleet.filter(j => offlineQueueIds.includes(j.id) && j.status === 'Available').map(j => (
+                              <div key={j.id} className="flex justify-between items-center p-3 rounded-xl bg-black border border-white/10 text-xs">
+                                <div>
+                                  <span className="font-bold text-white">{j.destination}</span>
+                                  <span className="text-zinc-500"> — Ksh {j.fee}</span>
+                                </div>
+                                <button
+                                  onClick={() => claimDeliveryJob(j.id, currentUser?.username || 'Rider')}
+                                  className="px-3 py-1.5 bg-white text-black text-[10px] font-bold uppercase rounded-lg"
+                                >
+                                  Claim Job
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Rider leaderboard */}
+                      <div className="liquid-glass p-5 rounded-2xl border border-white/10 space-y-3">
+                        <h3 className="text-xs font-extrabold tracking-widest uppercase text-white border-b border-white/5 pb-2 flex items-center gap-2">
+                          <Trophy className="w-4 h-4" />
+                          Rider Leaderboard — This Week
+                        </h3>
+                        <div className="space-y-2 max-h-40 overflow-y-auto">
+                          {riderLeaderboard.length === 0 ? (
+                            <p className="text-xs text-zinc-500">No completed deliveries yet.</p>
+                          ) : (
+                            riderLeaderboard.map((r, i) => (
+                              <div key={r.name} className="flex justify-between items-center p-2 rounded-xl bg-black border border-white/5 text-xs">
+                                <span className={`font-bold ${r.name === currentUser?.username ? 'text-white' : 'text-zinc-400'}`}>
+                                  #{i + 1} {r.name}{r.name === currentUser?.username ? ' (You)' : ''}
+                                </span>
+                                <span className="text-zinc-500 font-mono">{r.week} this week | {r.total} total</span>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Live order desk with job filters */}
+                      <div className="liquid-glass p-5 rounded-2xl border border-white/10 space-y-4">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                          <h3 className="text-xs font-extrabold tracking-widest uppercase text-white">Live Delivery Order Desk</h3>
+                          <div className="flex gap-2">
+                            {([
+                              { key: 'available', label: 'Available' },
+                              { key: 'active', label: 'In Transit' },
+                              { key: 'completed', label: 'Delivered' }
+                            ] as const).map((f) => (
+                              <button
+                                key={f.key}
+                                onClick={() => setRiderJobFilter(f.key)}
+                                className={`px-3 py-1.5 rounded-lg text-[9px] font-bold uppercase tracking-wider ${
+                                  riderJobFilter === f.key ? 'bg-white text-black' : 'bg-zinc-900 text-zinc-400 border border-white/10'
+                                }`}
+                              >
+                                {f.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        {!riderOnline && (
+                          <p className="text-[10px] text-zinc-500 uppercase tracking-widest">You are offline — switch online to claim new jobs.</p>
+                        )}
+                        <div className="space-y-4 max-h-87.5 overflow-y-auto pr-2">
+                          {filteredRiderJobs.length === 0 ? (
+                            <p className="text-xs text-zinc-500">No {riderJobFilter} jobs right now.</p>
+                          ) : filteredRiderJobs.map((job) => (
                           <div key={job.id} className="p-4 rounded-xl bg-black border border-white/5 space-y-3">
                             <div className="flex justify-between items-start text-xs">
                               <div>
@@ -3273,13 +4318,22 @@ export default function App() {
 
                             <p className="text-xs text-zinc-400 font-mono">Items: {job.itemsSummary}</p>
 
+                            {job.status === 'Available' && suggestedFeeFor(job.destination) !== undefined && (
+                              <p className="text-[10px] text-zinc-500 uppercase tracking-wider">
+                                Zone suggested fee: <span className="text-white font-bold font-mono">Ksh {suggestedFeeFor(job.destination)}</span>
+                              </p>
+                            )}
+
                             <div className="flex justify-between items-center text-[11px] text-zinc-400 border-t border-white/5 pt-2">
                               <span>Transit Fee: <span className="text-white font-bold font-mono">Ksh {job.fee}</span></span>
                               
                               {job.status === 'Available' && (
                                 <button
                                   onClick={() => claimDeliveryJob(job.id, currentUser?.username || 'Rider')}
-                                  className="px-3 py-1.5 bg-white text-black text-[10px] font-bold uppercase rounded-lg"
+                                  disabled={!riderOnline}
+                                  className={`px-3 py-1.5 text-[10px] font-bold uppercase rounded-lg ${
+                                    riderOnline ? 'bg-white text-black' : 'bg-zinc-800 text-zinc-500 cursor-not-allowed'
+                                  }`}
                                 >
                                   Claim Job
                                 </button>
@@ -3287,13 +4341,15 @@ export default function App() {
 
                               {job.status === 'Assigned' && (
                                 <div className="flex items-center gap-2">
-                                  <span className="text-zinc-500">Claimed by you</span>
-                                  <button
-                                    onClick={() => setJobPickedUp(job.id)}
-                                    className="px-3 py-1.5 bg-white text-black text-[10px] font-bold uppercase rounded-lg"
-                                  >
-                                    Confirm Pick Up
-                                  </button>
+                                  <span className="text-zinc-500">{job.riderName === currentUser?.username ? 'Claimed by you' : `Claimed by ${job.riderName || 'another rider'}`}</span>
+                                  {job.riderName === currentUser?.username && (
+                                    <button
+                                      onClick={() => setJobPickedUp(job.id)}
+                                      className="px-3 py-1.5 bg-white text-black text-[10px] font-bold uppercase rounded-lg"
+                                    >
+                                      Confirm Pick Up
+                                    </button>
+                                  )}
                                 </div>
                               )}
 
@@ -3317,8 +4373,30 @@ export default function App() {
                                 </div>
                               )}
                             </div>
+
+                            {job.status === 'Delivered' && (
+                              <div className="border-t border-white/5 pt-2">
+                                <button
+                                  onClick={() => setExpandedReceiptId(expandedReceiptId === job.id ? null : job.id)}
+                                  className="px-3 py-1.5 bg-zinc-900 border border-white/10 text-white text-[10px] font-bold uppercase rounded-lg"
+                                >
+                                  {expandedReceiptId === job.id ? 'Hide Receipt' : 'View Receipt'}
+                                </button>
+                                {expandedReceiptId === job.id && (
+                                  <div className="mt-2 p-3 rounded-lg bg-zinc-950 border border-white/10 space-y-1 text-[10px] font-mono text-zinc-400">
+                                    <p>Order: <span className="text-white">{job.orderId}</span></p>
+                                    <p>Merchant: <span className="text-white">{job.merchantName}</span></p>
+                                    <p>Destination: <span className="text-white">{job.destination}</span></p>
+                                    <p>Items: <span className="text-white">{job.itemsSummary}</span></p>
+                                    <p>Transit Fee: <span className="text-white">Ksh {job.fee}</span></p>
+                                    <p>OTP Verified / Delivered At: <span className="text-white">{job.deliveredAt ? new Date(job.deliveredAt).toLocaleString() : '—'}</span></p>
+                                  </div>
+                                )}
+                              </div>
+                            )}
                           </div>
                         ))}
+                        </div>
                       </div>
                     </div>
                   )}
@@ -3409,6 +4487,114 @@ export default function App() {
                           );
                         })}
                       </div>
+                    </div>
+
+                    <div className="liquid-glass p-5 rounded-2xl border border-white/10 space-y-3">
+                      <h3 className="text-xs font-extrabold tracking-widest uppercase text-white border-b border-white/5 pb-2 flex items-center gap-2">
+                        <Trophy className="w-4 h-4" />
+                        Rider Leaderboard (This Week)
+                      </h3>
+                      <div className="space-y-2 max-h-62.5 overflow-y-auto">
+                        {riderLeaderboard.length === 0 ? (
+                          <p className="text-xs text-zinc-500">No completed deliveries yet.</p>
+                        ) : (
+                          riderLeaderboard.map((r, i) => (
+                            <div key={r.name} className="flex justify-between items-center p-2 rounded-xl bg-black border border-white/5 text-xs">
+                              <span className="text-white font-bold">#{i + 1} {r.name}</span>
+                              <span className="text-zinc-500 font-mono">{r.week} this week | {r.total} total</span>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="liquid-glass p-5 rounded-2xl border border-white/10 space-y-3">
+                      <h3 className="text-xs font-extrabold tracking-widest uppercase text-white border-b border-white/5 pb-2 flex items-center gap-2">
+                        <MapPin className="w-4 h-4" />
+                        Route Zone Fee Suggester
+                      </h3>
+                      <div className="grid grid-cols-2 gap-2">
+                        <input
+                          type="text"
+                          placeholder="Zone e.g. Rongai"
+                          value={zoneForm.zone}
+                          onChange={(e) => setZoneForm({ ...zoneForm, zone: e.target.value })}
+                          className="bg-black border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
+                        />
+                        <input
+                          type="number"
+                          min="1"
+                          placeholder="Suggested fee (Ksh)"
+                          value={zoneForm.fee}
+                          onChange={(e) => setZoneForm({ ...zoneForm, fee: e.target.value })}
+                          className="bg-black border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
+                        />
+                      </div>
+                      <button
+                        onClick={saveZoneFee}
+                        className="w-full py-2 bg-white text-black text-[10px] font-extrabold uppercase rounded-xl hover:bg-zinc-200 transition-all"
+                      >
+                        Save Zone Fee
+                      </button>
+                      <div className="space-y-2 max-h-40 overflow-y-auto">
+                        {zoneFees.length === 0 ? (
+                          <p className="text-xs text-zinc-500">No zones configured yet.</p>
+                        ) : (
+                          zoneFees.map(z => (
+                            <div key={z.id} className="flex justify-between items-center p-2 rounded-xl bg-black border border-white/5 text-xs">
+                              <span className="text-white font-bold">{z.zone}</span>
+                              <span className="flex items-center gap-2">
+                                <span className="text-zinc-500 font-mono">Ksh {z.fee}</span>
+                                <button
+                                  onClick={() => deleteZoneFee(z.id)}
+                                  className="px-2 py-1 bg-red-950 text-red-400 rounded text-[9px] font-bold uppercase"
+                                >
+                                  Remove
+                                </button>
+                              </span>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="liquid-glass p-5 rounded-2xl border border-white/10 space-y-3">
+                    <h3 className="text-xs font-extrabold tracking-widest uppercase text-white border-b border-white/5 pb-2">
+                      Rider M-Pesa Payout Requests ({payoutRequests.filter(p => p.status === 'Pending').length})
+                    </h3>
+                    <div className="space-y-3 max-h-62.5 overflow-y-auto">
+                      {payoutRequests.length === 0 ? (
+                        <p className="text-xs text-zinc-500">No payout requests yet.</p>
+                      ) : (
+                        payoutRequests.map((p) => (
+                          <div key={p.id} className="p-3 rounded-xl bg-black border border-white/5 space-y-2">
+                            <div className="flex justify-between items-center text-xs">
+                              <h4 className="font-bold text-white">{p.riderName}</h4>
+                              <span className={`text-[9px] px-2 py-0.5 rounded font-bold uppercase ${p.status === 'Paid' ? 'bg-white text-black' : p.status === 'Rejected' ? 'bg-red-950 text-red-400' : 'bg-zinc-800 text-white'}`}>
+                                {p.status}
+                              </span>
+                            </div>
+                            <p className="text-[10px] text-zinc-500 font-mono">Ksh {p.amount} | Tel: {p.phone} | {p.createdAt}</p>
+                            {p.status === 'Pending' && (
+                              <div className="flex gap-2 justify-end pt-1">
+                                <button
+                                  onClick={() => resolvePayoutRequest(p.id, 'Paid')}
+                                  className="px-2.5 py-1 bg-white text-black rounded text-[9px] font-extrabold uppercase"
+                                >
+                                  Mark Paid
+                                </button>
+                                <button
+                                  onClick={() => resolvePayoutRequest(p.id, 'Rejected')}
+                                  className="px-2.5 py-1 bg-red-950 text-red-400 rounded text-[9px] font-extrabold uppercase"
+                                >
+                                  Reject
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        ))
+                      )}
                     </div>
                   </div>
 
